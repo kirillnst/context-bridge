@@ -34,8 +34,7 @@ type ContextBridgeNode =
 	| WorkspaceFolderNode
 	| SelectionNode
 	| SelectionItemNode
-	| ManagedFileNode
-	| InfoNode;
+	| ManagedFileNode;
 
 interface WorkspaceFolderNode {
 	kind: 'workspaceFolder';
@@ -58,13 +57,6 @@ interface ManagedFileNode {
 	kind: 'managedFile';
 	folder: vscode.WorkspaceFolder;
 	fileName: typeof EXPORT_FILE_NAME | typeof IMPORT_FILE_NAME;
-	exists: boolean;
-}
-
-interface InfoNode {
-	kind: 'info';
-	label: string;
-	description?: string;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -145,16 +137,6 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 				return this.getWorkspaceContent(element.folder);
 
 			case 'selection':
-				if (element.selection.items.length === 0) {
-					return [
-						{
-							kind: 'info',
-							label: 'Пусто',
-							description: 'В выборке пока нет файлов и папок',
-						},
-					];
-				}
-
 				return element.selection.items.map<SelectionItemNode>((item) => ({
 					kind: 'selectionItem',
 					folder: element.folder,
@@ -163,7 +145,6 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 
 			case 'selectionItem':
 			case 'managedFile':
-			case 'info':
 				return [];
 		}
 	}
@@ -192,7 +173,7 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 
 				item.iconPath = new vscode.ThemeIcon('list-tree');
 				item.description = `${count}`;
-				item.tooltip = `${element.selection.name} — ${count} element(s)`;
+				item.tooltip = `${element.selection.name} — ${count} item(s)`;
 				item.contextValue = 'contextBridge.selection';
 
 				return item;
@@ -235,30 +216,13 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 
 				item.iconPath = vscode.ThemeIcon.File;
 				item.tooltip = fileUri.fsPath;
-				item.description = element.exists ? undefined : 'missing';
+				item.resourceUri = fileUri;
 				item.contextValue = 'contextBridge.managedFile';
-
-				if (element.exists) {
-					item.resourceUri = fileUri;
-					item.command = {
-						command: 'vscode.open',
-						title: 'Open File',
-						arguments: [fileUri],
-					};
-				}
-
-				return item;
-			}
-
-			case 'info': {
-				const item = new vscode.TreeItem(
-					element.label,
-					vscode.TreeItemCollapsibleState.None
-				);
-
-				item.description = element.description;
-				item.iconPath = new vscode.ThemeIcon('info');
-				item.contextValue = 'contextBridge.info';
+				item.command = {
+					command: 'vscode.open',
+					title: 'Open File',
+					arguments: [fileUri],
+				};
 
 				return item;
 			}
@@ -268,32 +232,103 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 	private async getWorkspaceContent(folder: vscode.WorkspaceFolder): Promise<ContextBridgeNode[]> {
 		const config = await readContextBridgeConfig(folder);
 
-		const exportExists = await fileExists(vscode.Uri.joinPath(folder.uri, EXPORT_FILE_NAME));
-		const importExists = await fileExists(vscode.Uri.joinPath(folder.uri, IMPORT_FILE_NAME));
+		// 1) Выборки: показываем только те, у которых после валидации реально есть существующие элементы
+		let selectionNodes: SelectionNode[] = [];
+		if (config) {
+			const validatedSelections: ContextBridgeSelection[] = [];
 
-		const selectionNodes: SelectionNode[] = config.selections.map((selection) => ({
-			kind: 'selection',
-			folder,
-			selection,
-		}));
+			for (const selection of config.selections) {
+				const existingItems = await filterExistingItems(folder, selection.items);
+				if (existingItems.length > 0) {
+					validatedSelections.push({
+						...selection,
+						items: existingItems,
+					});
+				}
+			}
 
-		const managedFileNodes: ManagedFileNode[] = [
-			{
+			selectionNodes = validatedSelections.map((selection) => ({
+				kind: 'selection',
+				folder,
+				selection,
+			}));
+		}
+
+		// 2) export/import: показываем только если файл существует и это валидный JSON
+		const managedFileNodes: ManagedFileNode[] = [];
+
+		if (await isValidJsonFile(vscode.Uri.joinPath(folder.uri, EXPORT_FILE_NAME))) {
+			managedFileNodes.push({
 				kind: 'managedFile',
 				folder,
 				fileName: EXPORT_FILE_NAME,
-				exists: exportExists,
-			},
-			{
+			});
+		}
+
+		if (await isValidJsonFile(vscode.Uri.joinPath(folder.uri, IMPORT_FILE_NAME))) {
+			managedFileNodes.push({
 				kind: 'managedFile',
 				folder,
 				fileName: IMPORT_FILE_NAME,
-				exists: importExists,
-			},
-		];
+			});
+		}
 
 		return [...selectionNodes, ...managedFileNodes];
 	}
+}
+
+async function filterExistingItems(
+	folder: vscode.WorkspaceFolder,
+	items: ContextBridgeItem[]
+): Promise<ContextBridgeItem[]> {
+	const checks = await Promise.all(items.map(async (item) => {
+		// безопасность: не даём абсолютные/вылазящие пути
+		if (!isSafeRelativePath(item.path)) {
+			return undefined;
+		}
+
+		const uri = toWorkspaceRelativeUri(folder.uri, item.path);
+
+		try {
+			const stat = await vscode.workspace.fs.stat(uri);
+			const isDir = (stat.type & vscode.FileType.Directory) !== 0;
+			const isFile = (stat.type & vscode.FileType.File) !== 0;
+
+			if (item.type === 'folder' && isDir) {
+				return item;
+			}
+
+			if (item.type === 'file' && isFile) {
+				return item;
+			}
+
+			return undefined;
+		} catch {
+			return undefined;
+		}
+	}));
+
+	return checks.filter((x): x is ContextBridgeItem => x !== undefined);
+}
+
+function isSafeRelativePath(p: string): boolean {
+	// запрещаем абсолютные пути (в т.ч. C:\...)
+	if (path.isAbsolute(p)) {
+		return false;
+	}
+
+	const normalized = p.replace(/\\/g, '/').trim();
+	if (normalized.length === 0) {
+		return false;
+	}
+
+	// запрещаем выход из workspace
+	const segments = normalized.split('/').filter(Boolean);
+	if (segments.some((s) => s === '..')) {
+		return false;
+	}
+
+	return true;
 }
 
 async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
@@ -382,7 +417,9 @@ function createDefaultConfig(): ContextBridgeConfig {
 	};
 }
 
-async function readContextBridgeConfig(folder: vscode.WorkspaceFolder): Promise<ContextBridgeConfig> {
+async function readContextBridgeConfig(
+	folder: vscode.WorkspaceFolder
+): Promise<ContextBridgeConfig | undefined> {
 	const configUri = vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME);
 
 	try {
@@ -391,21 +428,22 @@ async function readContextBridgeConfig(folder: vscode.WorkspaceFolder): Promise<
 
 		return normalizeConfig(parsed);
 	} catch {
-		return createDefaultConfig();
+		return undefined;
 	}
 }
 
-function normalizeConfig(value: unknown): ContextBridgeConfig {
+function normalizeConfig(value: unknown): ContextBridgeConfig | undefined {
 	if (!isRecord(value) || !Array.isArray(value.selections)) {
-		return createDefaultConfig();
+		return undefined;
 	}
 
+	// ВАЖНО: выборку считаем валидной только если после нормализации items не пустые
 	const selections = value.selections
 		.map((selection, index) => normalizeSelection(selection, index))
 		.filter((selection): selection is ContextBridgeSelection => selection !== undefined);
 
 	if (selections.length === 0) {
-		return createDefaultConfig();
+		return undefined;
 	}
 
 	return {
@@ -424,6 +462,11 @@ function normalizeSelection(value: unknown, index: number): ContextBridgeSelecti
 		.map((item) => normalizeSelectionItem(item))
 		.filter((item): item is ContextBridgeItem => item !== undefined);
 
+	// если файлов/папок нет или все невалидные — выборку НЕ показываем
+	if (items.length === 0) {
+		return undefined;
+	}
+
 	return {
 		id: typeof value.id === 'string' && value.id.trim().length > 0
 			? value.id
@@ -441,6 +484,10 @@ function normalizeSelectionItem(value: unknown): ContextBridgeItem | undefined {
 	}
 
 	if (typeof value.path !== 'string' || value.path.trim().length === 0) {
+		return undefined;
+	}
+
+	if (!isSafeRelativePath(value.path)) {
 		return undefined;
 	}
 
@@ -476,6 +523,16 @@ function toJsonBytes(value: unknown): Uint8Array {
 async function fileExists(uri: vscode.Uri): Promise<boolean> {
 	try {
 		await vscode.workspace.fs.stat(uri);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function isValidJsonFile(uri: vscode.Uri): Promise<boolean> {
+	try {
+		const raw = await vscode.workspace.fs.readFile(uri);
+		JSON.parse(Buffer.from(raw).toString('utf8'));
 		return true;
 	} catch {
 		return false;
