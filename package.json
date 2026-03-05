@@ -13,10 +13,6 @@
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
-      {
-        "command": "context-bridge.helloWorld",
-        "title": "Hello World"
-      }
     ]
   },
   "scripts": {
