@@ -2,6 +2,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 const INITIALIZE_WORKSPACE_FILES_COMMAND = 'context-bridge.initializeWorkspaceFiles';
+const ACTIVATE_SELECTION_COMMAND = 'context-bridge.activateSelection';
+const DEACTIVATE_SELECTION_COMMAND = 'context-bridge.deactivateSelection';
 const CONTEXT_BRIDGE_EXPLORER_VIEW_ID = 'contextBridgeExplorer';
 
 const CONFIG_FILE_NAME = 'context-bridge.json';
@@ -18,6 +20,7 @@ interface ContextBridgeItem {
 interface ContextBridgeSelection {
 	id: string;
 	name: string;
+	active: boolean;
 	items: ContextBridgeItem[];
 }
 
@@ -80,7 +83,58 @@ export function activate(context: vscode.ExtensionContext): void {
 		}
 	);
 
-	context.subscriptions.push(treeView, initializeWorkspaceFilesDisposable);
+	const activateSelectionDisposable = vscode.commands.registerCommand(
+		ACTIVATE_SELECTION_COMMAND,
+		async (node?: ContextBridgeNode) => {
+			if (!node || node.kind !== 'selection') {
+				return;
+			}
+
+			const success = await setSelectionActiveState(node.folder, node.selection.id, true);
+			if (!success) {
+				void vscode.window.showErrorMessage(
+					`Context Bridge: не удалось активировать выборку "${node.selection.name}".`
+				);
+				return;
+			}
+
+			explorerProvider.refresh();
+
+			void vscode.window.showInformationMessage(
+				`Context Bridge: выборка "${node.selection.name}" активирована.`
+			);
+		}
+	);
+
+	const deactivateSelectionDisposable = vscode.commands.registerCommand(
+		DEACTIVATE_SELECTION_COMMAND,
+		async (node?: ContextBridgeNode) => {
+			if (!node || node.kind !== 'selection') {
+				return;
+			}
+
+			const success = await setSelectionActiveState(node.folder, node.selection.id, false);
+			if (!success) {
+				void vscode.window.showErrorMessage(
+					`Context Bridge: не удалось деактивировать выборку "${node.selection.name}".`
+				);
+				return;
+			}
+
+			explorerProvider.refresh();
+
+			void vscode.window.showInformationMessage(
+				`Context Bridge: выборка "${node.selection.name}" деактивирована.`
+			);
+		}
+	);
+
+	context.subscriptions.push(
+		treeView,
+		initializeWorkspaceFilesDisposable,
+		activateSelectionDisposable,
+		deactivateSelectionDisposable
+	);
 }
 
 class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBridgeNode> {
@@ -166,15 +220,22 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 
 			case 'selection': {
 				const count = element.selection.items.length;
+				const isActive = element.selection.active;
+
 				const item = new vscode.TreeItem(
 					element.selection.name,
 					vscode.TreeItemCollapsibleState.Collapsed
 				);
 
-				item.iconPath = new vscode.ThemeIcon('list-tree');
-				item.description = `${count}`;
-				item.tooltip = `${element.selection.name} — ${count} item(s)`;
-				item.contextValue = 'contextBridge.selection';
+				item.id = `contextBridge.selection:${element.folder.uri.toString()}:${element.selection.id}`;
+				item.iconPath = isActive
+					? new vscode.ThemeIcon('list-tree')
+					: new vscode.ThemeIcon('list-tree', new vscode.ThemeColor('disabledForeground'));
+				item.description = isActive ? `${count}` : `${count} • неактивна`;
+				item.tooltip = `${element.selection.name} — ${count} item(s) — ${isActive ? 'active' : 'inactive'}`;
+				item.contextValue = isActive
+					? 'contextBridge.selection.active'
+					: 'contextBridge.selection.inactive';
 
 				return item;
 			}
@@ -232,19 +293,17 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 	private async getWorkspaceContent(folder: vscode.WorkspaceFolder): Promise<ContextBridgeNode[]> {
 		const config = await readContextBridgeConfig(folder);
 
-		// 1) Выборки: показываем только те, у которых после валидации реально есть существующие элементы
 		let selectionNodes: SelectionNode[] = [];
 		if (config) {
 			const validatedSelections: ContextBridgeSelection[] = [];
 
 			for (const selection of config.selections) {
 				const existingItems = await filterExistingItems(folder, selection.items);
-				if (existingItems.length > 0) {
-					validatedSelections.push({
-						...selection,
-						items: existingItems,
-					});
-				}
+
+				validatedSelections.push({
+					...selection,
+					items: existingItems,
+				});
 			}
 
 			selectionNodes = validatedSelections.map((selection) => ({
@@ -254,7 +313,6 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 			}));
 		}
 
-		// 2) export/import: показываем только если файл существует и это валидный JSON
 		const managedFileNodes: ManagedFileNode[] = [];
 
 		if (await isValidJsonFile(vscode.Uri.joinPath(folder.uri, EXPORT_FILE_NAME))) {
@@ -282,7 +340,6 @@ async function filterExistingItems(
 	items: ContextBridgeItem[]
 ): Promise<ContextBridgeItem[]> {
 	const checks = await Promise.all(items.map(async (item) => {
-		// безопасность: не даём абсолютные/вылазящие пути
 		if (!isSafeRelativePath(item.path)) {
 			return undefined;
 		}
@@ -312,7 +369,6 @@ async function filterExistingItems(
 }
 
 function isSafeRelativePath(p: string): boolean {
-	// запрещаем абсолютные пути (в т.ч. C:\...)
 	if (path.isAbsolute(p)) {
 		return false;
 	}
@@ -322,7 +378,6 @@ function isSafeRelativePath(p: string): boolean {
 		return false;
 	}
 
-	// запрещаем выход из workspace
 	const segments = normalized.split('/').filter(Boolean);
 	if (segments.some((s) => s === '..')) {
 		return false;
@@ -412,6 +467,7 @@ function createDefaultConfig(): ContextBridgeConfig {
 		selections: [1, 2, 3].map((index) => ({
 			id: `selection-${index}`,
 			name: `Выборка ${index}`,
+			active: true,
 			items: [],
 		})),
 	};
@@ -432,12 +488,79 @@ async function readContextBridgeConfig(
 	}
 }
 
+async function setSelectionActiveState(
+	folder: vscode.WorkspaceFolder,
+	selectionId: string,
+	active: boolean
+): Promise<boolean> {
+	const configUri = vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME);
+
+	try {
+		const raw = await vscode.workspace.fs.readFile(configUri);
+		const parsed = JSON.parse(Buffer.from(raw).toString('utf8')) as unknown;
+
+		if (!isRecord(parsed) || !Array.isArray(parsed.selections)) {
+			return false;
+		}
+
+		let found = false;
+		let changed = false;
+
+		const nextSelections = parsed.selections.map((selection, index) => {
+			if (!isRecord(selection)) {
+				return selection;
+			}
+
+			const currentId =
+				typeof selection.id === 'string' && selection.id.trim().length > 0
+					? selection.id
+					: `selection-${index + 1}`;
+
+			if (currentId !== selectionId) {
+				return selection;
+			}
+
+			found = true;
+
+			if (selection.active === active) {
+				return selection;
+			}
+
+			changed = true;
+
+			return {
+				...selection,
+				active,
+			};
+		});
+
+		if (!found) {
+			return false;
+		}
+
+		if (!changed) {
+			return true;
+		}
+
+		await vscode.workspace.fs.writeFile(
+			configUri,
+			toJsonBytes({
+				...parsed,
+				selections: nextSelections,
+			})
+		);
+
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function normalizeConfig(value: unknown): ContextBridgeConfig | undefined {
 	if (!isRecord(value) || !Array.isArray(value.selections)) {
 		return undefined;
 	}
 
-	// ВАЖНО: выборку считаем валидной только если после нормализации items не пустые
 	const selections = value.selections
 		.map((selection, index) => normalizeSelection(selection, index))
 		.filter((selection): selection is ContextBridgeSelection => selection !== undefined);
@@ -462,11 +585,6 @@ function normalizeSelection(value: unknown, index: number): ContextBridgeSelecti
 		.map((item) => normalizeSelectionItem(item))
 		.filter((item): item is ContextBridgeItem => item !== undefined);
 
-	// если файлов/папок нет или все невалидные — выборку НЕ показываем
-	if (items.length === 0) {
-		return undefined;
-	}
-
 	return {
 		id: typeof value.id === 'string' && value.id.trim().length > 0
 			? value.id
@@ -474,6 +592,7 @@ function normalizeSelection(value: unknown, index: number): ContextBridgeSelecti
 		name: typeof value.name === 'string' && value.name.trim().length > 0
 			? value.name
 			: `Выборка ${index + 1}`,
+		active: typeof value.active === 'boolean' ? value.active : true,
 		items,
 	};
 }

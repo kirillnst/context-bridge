@@ -17,6 +17,16 @@
         "command": "context-bridge.initializeWorkspaceFiles",
         "title": "Context Bridge: Initialize Workspace Files",
         "category": "Context Bridge"
+      },
+      {
+        "command": "context-bridge.activateSelection",
+        "title": "Активировать выборку",
+        "category": "Context Bridge"
+      },
+      {
+        "command": "context-bridge.deactivateSelection",
+        "title": "Деактивировать выборку",
+        "category": "Context Bridge"
       }
     ],
     "views": {
@@ -25,6 +35,18 @@
           "id": "contextBridgeExplorer",
           "name": "Context Bridge",
           "when": "workspaceFolderCount != 0"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "context-bridge.activateSelection",
+          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.inactive"
+        },
+        {
+          "command": "context-bridge.deactivateSelection",
+          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.active"
         }
       ]
     }
