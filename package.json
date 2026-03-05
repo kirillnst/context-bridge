@@ -18,7 +18,16 @@
         "title": "Context Bridge: Initialize Workspace Files",
         "category": "Context Bridge"
       }
-    ]
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "contextBridgeExplorer",
+          "name": "Context Bridge",
+          "when": "workspaceFolderCount != 0"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
