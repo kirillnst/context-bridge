@@ -9,14 +9,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onView:contextBridgeExplorer",
-    "onCommand:context-bridge.initializeWorkspaceFiles",
-    "onCommand:context-bridge.activateSelection",
-    "onCommand:context-bridge.deactivateSelection",
-    "onCommand:context-bridge.addToSelection",
-    "onCommand:context-bridge.removeFromSelection"
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "views": {
