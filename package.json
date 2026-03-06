@@ -19,6 +19,35 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "contextBridge",
+          "title": "Context Bridge",
+          "icon": "media/context-bridge.svg"
+        }
+      ]
+    },
+    "views": {
+      "contextBridge": [
+        {
+          "id": "contextBridgeExplorer",
+          "name": "Selections"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "contextBridgeExplorer",
+        "contents": "Context Bridge ещё не инициализирован.\n[Создать context-bridge.json, export.json и import.json](command:context-bridge.initializeWorkspaceFiles)",
+        "when": "workspaceFolderCount != 0"
+      },
+      {
+        "view": "contextBridgeExplorer",
+        "contents": "Откройте папку или workspace, чтобы использовать Context Bridge.",
+        "when": "workspaceFolderCount == 0"
+      }
+    ],
     "commands": [
       {
         "command": "context-bridge.initializeWorkspaceFiles",
@@ -67,6 +96,13 @@
         {
           "command": "context-bridge.deactivateSelection",
           "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.active"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "context-bridge.initializeWorkspaceFiles",
+          "when": "view == contextBridgeExplorer",
+          "group": "navigation@1"
         }
       ]
     }

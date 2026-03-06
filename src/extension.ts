@@ -1,4 +1,3 @@
-// src/extension.ts
 import * as vscode from 'vscode';
 import {
 	CONFIG_FILE_NAME,
@@ -7,22 +6,28 @@ import {
 	ContextBridgeItem,
 	ContextBridgeSelection,
 	ContextBridgeSelectionEngine,
+	ResourceMembershipInfo,
+	SelectionMutationResult,
 	createDefaultConfig,
 	fileExists,
 	getBaseName,
 	isValidJsonFile,
-	readContextBridgeConfig,
 	toJsonBytes,
 	toWorkspaceRelativeUri,
 } from './selectionEngine';
 
-const INITIALIZE_WORKSPACE_FILES_COMMAND = 'context-bridge.initializeWorkspaceFiles';
-const ACTIVATE_SELECTION_COMMAND = 'context-bridge.activateSelection';
-const DEACTIVATE_SELECTION_COMMAND = 'context-bridge.deactivateSelection';
-const ADD_TO_SELECTION_COMMAND = 'context-bridge.addToSelection';
-const REMOVE_FROM_SELECTION_COMMAND = 'context-bridge.removeFromSelection';
+const COMMANDS = {
+	initializeWorkspaceFiles: 'context-bridge.initializeWorkspaceFiles',
+	activateSelection: 'context-bridge.activateSelection',
+	deactivateSelection: 'context-bridge.deactivateSelection',
+	addToSelection: 'context-bridge.addToSelection',
+	removeFromSelection: 'context-bridge.removeFromSelection',
+} as const;
 
 const CONTEXT_BRIDGE_EXPLORER_VIEW_ID = 'contextBridgeExplorer';
+const MANAGED_FILE_NAMES = [CONFIG_FILE_NAME, EXPORT_FILE_NAME, IMPORT_FILE_NAME] as const;
+
+type ManagedFileName = (typeof MANAGED_FILE_NAMES)[number];
 
 interface WorkspaceFolderQuickPickItem extends vscode.QuickPickItem {
 	folder: vscode.WorkspaceFolder;
@@ -55,124 +60,142 @@ interface SelectionItemNode {
 interface ManagedFileNode {
 	kind: 'managedFile';
 	folder: vscode.WorkspaceFolder;
-	fileName: typeof EXPORT_FILE_NAME | typeof IMPORT_FILE_NAME;
+	fileName: ManagedFileName;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
 	const selectionEngine = new ContextBridgeSelectionEngine(context);
 	const explorerProvider = new ContextBridgeExplorerProvider(context, selectionEngine);
 
-	const treeView = vscode.window.createTreeView(CONTEXT_BRIDGE_EXPLORER_VIEW_ID, {
-		treeDataProvider: explorerProvider,
-		showCollapseAll: true,
+	context.subscriptions.push(
+		vscode.window.createTreeView(CONTEXT_BRIDGE_EXPLORER_VIEW_ID, {
+			treeDataProvider: explorerProvider,
+			showCollapseAll: true,
+		}),
+		vscode.window.registerFileDecorationProvider(selectionEngine),
+		...registerCommands(explorerProvider, selectionEngine)
+	);
+}
+
+function registerCommands(
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable[] {
+	return [
+		registerInitializeWorkspaceFilesCommand(explorerProvider),
+		registerSetSelectionActiveStateCommand(
+			COMMANDS.activateSelection,
+			true,
+			explorerProvider,
+			selectionEngine
+		),
+		registerSetSelectionActiveStateCommand(
+			COMMANDS.deactivateSelection,
+			false,
+			explorerProvider,
+			selectionEngine
+		),
+		registerAddToSelectionCommand(explorerProvider, selectionEngine),
+		registerRemoveFromSelectionCommand(explorerProvider, selectionEngine),
+	];
+}
+
+function registerInitializeWorkspaceFilesCommand(
+	explorerProvider: ContextBridgeExplorerProvider
+): vscode.Disposable {
+	return vscode.commands.registerCommand(COMMANDS.initializeWorkspaceFiles, async () => {
+		const folder = await getTargetWorkspaceFolder();
+		if (!folder) {
+			return;
+		}
+
+		await initializeWorkspaceFiles(folder);
+		explorerProvider.refresh();
 	});
+}
 
-	const initializeWorkspaceFilesDisposable = vscode.commands.registerCommand(
-		INITIALIZE_WORKSPACE_FILES_COMMAND,
-		async () => {
-			const folder = await getTargetWorkspaceFolder();
-			if (!folder) {
-				return;
-			}
-
-			await initializeWorkspaceFiles(folder);
-			explorerProvider.refresh();
+function registerSetSelectionActiveStateCommand(
+	command: typeof COMMANDS.activateSelection | typeof COMMANDS.deactivateSelection,
+	active: boolean,
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable {
+	return vscode.commands.registerCommand(command, async (node?: ContextBridgeNode) => {
+		if (!node || node.kind !== 'selection') {
+			return;
 		}
-	);
 
-	const activateSelectionDisposable = vscode.commands.registerCommand(
-		ACTIVATE_SELECTION_COMMAND,
-		async (node?: ContextBridgeNode) => {
-			if (!node || node.kind !== 'selection') {
-				return;
-			}
+		const ok = await selectionEngine.setSelectionActiveState(node.folder, node.selection.id, active);
+		if (!ok) {
+			void vscode.window.showErrorMessage(
+				`Context Bridge: не удалось ${active ? 'активировать' : 'деактивировать'} выборку "${node.selection.name}".`
+			);
+			return;
+		}
 
-			const ok = await selectionEngine.setSelectionActiveState(node.folder, node.selection.id, true);
-			if (!ok) {
-				void vscode.window.showErrorMessage(
-					`Context Bridge: не удалось активировать выборку "${node.selection.name}".`
-				);
-				return;
-			}
+		explorerProvider.refresh();
+		void vscode.window.showInformationMessage(
+			`Context Bridge: выборка "${node.selection.name}" ${active ? 'активирована' : 'деактивирована'}.`
+		);
+	});
+}
 
+function registerAddToSelectionCommand(
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable {
+	return vscode.commands.registerCommand(COMMANDS.addToSelection, async (resourceUri?: vscode.Uri) => {
+		if (!resourceUri) {
+			return;
+		}
+
+		const folder = vscode.workspace.getWorkspaceFolder(resourceUri);
+		if (!folder) {
+			return;
+		}
+
+		const summaries = await selectionEngine.getSelectionSummaries(folder);
+		if (summaries.length === 0) {
+			void vscode.window.showErrorMessage(
+				'Context Bridge: не найден context-bridge.json или в нём нет корректных выборок.'
+			);
+			return;
+		}
+
+		const picked = await vscode.window.showQuickPick(
+			summaries.map((summary, index) => ({
+				label: summary.selection.name,
+				description: `${summary.selection.active ? 'активна' : 'неактивна'} • ${formatFileCount(summary.fileCount)}`,
+				index,
+			})),
+			{ placeHolder: 'Добавить ресурс в какую выборку?' }
+		);
+
+		if (!picked) {
+			return;
+		}
+
+		const fallbackSelectionName = summaries[picked.index]?.selection.name;
+		const result = await selectionEngine.addResourceToSelection(resourceUri, picked.index);
+
+		if (result.status === 'added') {
 			explorerProvider.refresh();
 			void vscode.window.showInformationMessage(
-				`Context Bridge: выборка "${node.selection.name}" активирована.`
+				`Context Bridge: добавлено в "${result.selectionName ?? fallbackSelectionName ?? 'выборку'}".`
 			);
+			return;
 		}
-	);
 
-	const deactivateSelectionDisposable = vscode.commands.registerCommand(
-		DEACTIVATE_SELECTION_COMMAND,
-		async (node?: ContextBridgeNode) => {
-			if (!node || node.kind !== 'selection') {
-				return;
-			}
+		handleSelectionMutationFailure(result, picked.index, fallbackSelectionName);
+	});
+}
 
-			const ok = await selectionEngine.setSelectionActiveState(node.folder, node.selection.id, false);
-			if (!ok) {
-				void vscode.window.showErrorMessage(
-					`Context Bridge: не удалось деактивировать выборку "${node.selection.name}".`
-				);
-				return;
-			}
-
-			explorerProvider.refresh();
-			void vscode.window.showInformationMessage(
-				`Context Bridge: выборка "${node.selection.name}" деактивирована.`
-			);
-		}
-	);
-
-	const addToSelectionDisposable = vscode.commands.registerCommand(
-		ADD_TO_SELECTION_COMMAND,
-		async (resourceUri?: vscode.Uri) => {
-			if (!resourceUri) {
-				return;
-			}
-
-			const folder = vscode.workspace.getWorkspaceFolder(resourceUri);
-			if (!folder) {
-				return;
-			}
-
-			const summaries = await selectionEngine.getSelectionSummaries(folder);
-			if (summaries.length === 0) {
-				void vscode.window.showErrorMessage(
-					'Context Bridge: не найден context-bridge.json или в нём нет selections.'
-				);
-				return;
-			}
-
-			const picked = await vscode.window.showQuickPick(
-				summaries.map((s, index) => ({
-					label: s.selection.name,
-					description: `${s.selection.active ? 'active' : 'inactive'} • ${s.fileCount} file(s)`,
-					index,
-				})),
-				{ placeHolder: 'Добавить в какую выборку?' }
-			);
-
-			if (!picked) {
-				return;
-			}
-
-			const result = await selectionEngine.addResourceToSelection(resourceUri, picked.index);
-
-			if (result.status === 'added') {
-				explorerProvider.refresh();
-				void vscode.window.showInformationMessage(
-					`Context Bridge: добавлено в "${result.selectionName ?? summaries[picked.index]?.selection.name ?? 'выборку'}".`
-				);
-				return;
-			}
-
-			handleSelectionMutationFailure(result, picked.index, summaries[picked.index]?.selection.name);
-		}
-	);
-
-	const removeFromSelectionDisposable = vscode.commands.registerCommand(
-		REMOVE_FROM_SELECTION_COMMAND,
+function registerRemoveFromSelectionCommand(
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable {
+	return vscode.commands.registerCommand(
+		COMMANDS.removeFromSelection,
 		async (resourceUri?: vscode.Uri) => {
 			if (!resourceUri) {
 				return;
@@ -187,54 +210,39 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 
 			const picked = await vscode.window.showQuickPick(
-				memberships.map((m) => ({
-					label: m.selection.name,
-					description:
-						m.kind === 'direct'
-							? 'direct'
-							: m.kind === 'insideSelectedFolder'
-								? 'via selected folder'
-								: 'has selected descendants',
-					index: m.selectionIndex,
+				memberships.map((membership) => ({
+					label: membership.selection.name,
+					description: formatMembershipKind(membership.kind),
+					index: membership.selectionIndex,
 				})),
-				{ placeHolder: 'Убрать из какой выборки?' }
+				{ placeHolder: 'Убрать ресурс из какой выборки?' }
 			);
 
 			if (!picked) {
 				return;
 			}
 
+			const fallbackSelectionName = memberships.find(
+				(membership) => membership.selectionIndex === picked.index
+			)?.selection.name;
+
 			const result = await selectionEngine.removeResourceFromSelection(resourceUri, picked.index);
 
 			if (result.status === 'removed') {
 				explorerProvider.refresh();
 				void vscode.window.showInformationMessage(
-					`Context Bridge: убрано из "${result.selectionName ?? memberships.find((m) => m.selectionIndex === picked.index)?.selection.name ?? 'выборки'}".`
+					`Context Bridge: убрано из "${result.selectionName ?? fallbackSelectionName ?? 'выборки'}".`
 				);
 				return;
 			}
 
-			handleSelectionMutationFailure(
-				result,
-				picked.index,
-				memberships.find((m) => m.selectionIndex === picked.index)?.selection.name
-			);
+			handleSelectionMutationFailure(result, picked.index, fallbackSelectionName);
 		}
-	);
-
-	context.subscriptions.push(
-		treeView,
-		vscode.window.registerFileDecorationProvider(selectionEngine),
-		initializeWorkspaceFilesDisposable,
-		activateSelectionDisposable,
-		deactivateSelectionDisposable,
-		addToSelectionDisposable,
-		removeFromSelectionDisposable
 	);
 }
 
 function handleSelectionMutationFailure(
-	result: { status: string; selectionName?: string },
+	result: SelectionMutationResult,
 	selectionIndex: number,
 	fallbackSelectionName?: string
 ): void {
@@ -255,7 +263,7 @@ function handleSelectionMutationFailure(
 
 		case 'notDirectItem':
 			void vscode.window.showInformationMessage(
-				`Context Bridge: ресурс входит в "${selectionLabel}" не напрямую, а через папку. Точечные исключения пока не поддерживаются.`
+				`Context Bridge: ресурс входит в "${selectionLabel}" не напрямую, а через выбранную папку. Точечные исключения пока не поддерживаются.`
 			);
 			return;
 
@@ -268,6 +276,12 @@ function handleSelectionMutationFailure(
 		case 'selectionNotFound':
 			void vscode.window.showErrorMessage(
 				`Context Bridge: выборка не найдена (index=${selectionIndex}).`
+			);
+			return;
+
+		case 'invalidResource':
+			void vscode.window.showErrorMessage(
+				'Context Bridge: не удалось определить ресурс файла или папки.'
 			);
 			return;
 
@@ -290,11 +304,7 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 		context: vscode.ExtensionContext,
 		private readonly selectionEngine: ContextBridgeSelectionEngine
 	) {
-		const watcherPatterns = [
-			`**/${CONFIG_FILE_NAME}`,
-			`**/${EXPORT_FILE_NAME}`,
-			`**/${IMPORT_FILE_NAME}`,
-		];
+		const watcherPatterns = [`**/${CONFIG_FILE_NAME}`, `**/${EXPORT_FILE_NAME}`, `**/${IMPORT_FILE_NAME}`];
 
 		for (const pattern of watcherPatterns) {
 			const watcher = vscode.workspace.createFileSystemWatcher(pattern);
@@ -320,7 +330,6 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 
 	public async getChildren(element?: ContextBridgeNode): Promise<ContextBridgeNode[]> {
 		const folders = vscode.workspace.workspaceFolders;
-
 		if (!folders || folders.length === 0) {
 			return [];
 		}
@@ -356,12 +365,9 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 	public getTreeItem(element: ContextBridgeNode): vscode.TreeItem {
 		switch (element.kind) {
 			case 'workspaceFolder': {
-				const item = new vscode.TreeItem(
-					element.folder.name,
-					vscode.TreeItemCollapsibleState.Expanded
-				);
+				const item = new vscode.TreeItem(element.folder.name, vscode.TreeItemCollapsibleState.Expanded);
 
-				item.iconPath = vscode.ThemeIcon.Folder;
+				item.iconPath = new vscode.ThemeIcon('folder');
 				item.tooltip = element.folder.uri.fsPath;
 				item.contextValue = 'contextBridge.workspaceFolder';
 				return item;
@@ -369,21 +375,20 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 
 			case 'selection': {
 				const isActive = element.selection.active;
-
-				const item = new vscode.TreeItem(
-					element.selection.name,
-					vscode.TreeItemCollapsibleState.Collapsed
-				);
+				const item = new vscode.TreeItem(element.selection.name, vscode.TreeItemCollapsibleState.Collapsed);
 
 				item.id = `contextBridge.selection:${element.folder.uri.toString()}:${element.selection.id}`;
 				item.iconPath = isActive
 					? new vscode.ThemeIcon('list-tree')
 					: new vscode.ThemeIcon('list-tree', new vscode.ThemeColor('disabledForeground'));
 				item.description = isActive
-					? `${element.fileCount}`
-					: `${element.fileCount} • неактивна`;
+					? formatFileCount(element.fileCount)
+					: `${formatFileCount(element.fileCount)} • неактивна`;
 				item.tooltip =
-					`${element.selection.name} — ${element.fileCount} file(s), ${element.selection.items.length} direct item(s)`;
+					`${element.selection.name}\n` +
+					`Файлы: ${element.fileCount}\n` +
+					`Прямые элементы: ${element.selection.items.length}\n` +
+					`Статус: ${isActive ? 'активна' : 'неактивна'}`;
 				item.contextValue = isActive
 					? 'contextBridge.selection.active'
 					: 'contextBridge.selection.inactive';
@@ -393,24 +398,25 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 
 			case 'selectionItem': {
 				const targetUri = toWorkspaceRelativeUri(element.folder.uri, element.item.path);
-				const label = getBaseName(element.item.path);
+				const isFolder = element.item.type === 'folder';
+				const item = new vscode.TreeItem(getBaseName(element.item.path), vscode.TreeItemCollapsibleState.None);
 
-				const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-
+				item.resourceUri = targetUri;
 				item.description = element.item.path;
-				item.tooltip = element.item.path;
-				item.iconPath =
-					element.item.type === 'folder' ? vscode.ThemeIcon.Folder : vscode.ThemeIcon.File;
+				item.tooltip = `${isFolder ? 'Папка' : 'Файл'}\n${element.item.path}`;
+				item.iconPath = new vscode.ThemeIcon(isFolder ? 'folder' : 'file');
 				item.contextValue = `contextBridge.selectionItem.${element.item.type}`;
-
-				if (element.item.type === 'file') {
-					item.command = {
+				item.command = isFolder
+					? {
+						command: 'revealInExplorer',
+						title: 'Reveal in Explorer',
+						arguments: [targetUri],
+					}
+					: {
 						command: 'vscode.open',
 						title: 'Open File',
 						arguments: [targetUri],
 					};
-					item.resourceUri = targetUri;
-				}
 
 				return item;
 			}
@@ -419,9 +425,8 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 				const fileUri = vscode.Uri.joinPath(element.folder.uri, element.fileName);
 				const item = new vscode.TreeItem(element.fileName, vscode.TreeItemCollapsibleState.None);
 
-				item.iconPath = vscode.ThemeIcon.File;
-				item.tooltip = fileUri.fsPath;
 				item.resourceUri = fileUri;
+				item.tooltip = fileUri.fsPath;
 				item.contextValue = 'contextBridge.managedFile';
 				item.command = {
 					command: 'vscode.open',
@@ -436,7 +441,6 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 
 	private async getWorkspaceContent(folder: vscode.WorkspaceFolder): Promise<ContextBridgeNode[]> {
 		const selectionSummaries = await this.selectionEngine.getSelectionSummaries(folder);
-
 		const selectionNodes: SelectionNode[] = selectionSummaries.map((summary) => ({
 			kind: 'selection',
 			folder,
@@ -444,35 +448,50 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 			fileCount: summary.fileCount,
 		}));
 
-		const managedFileNodes: ManagedFileNode[] = [];
-
-		if (await isValidJsonFile(vscode.Uri.joinPath(folder.uri, EXPORT_FILE_NAME))) {
-			managedFileNodes.push({
-				kind: 'managedFile',
-				folder,
-				fileName: EXPORT_FILE_NAME,
-			});
-		}
-
-		if (await isValidJsonFile(vscode.Uri.joinPath(folder.uri, IMPORT_FILE_NAME))) {
-			managedFileNodes.push({
-				kind: 'managedFile',
-				folder,
-				fileName: IMPORT_FILE_NAME,
-			});
-		}
+		const managedFileNodes = await this.getManagedFileNodes(folder);
 
 		return [...selectionNodes, ...managedFileNodes];
 	}
+
+	private async getManagedFileNodes(folder: vscode.WorkspaceFolder): Promise<ManagedFileNode[]> {
+		const nodes: ManagedFileNode[] = [];
+
+		for (const fileName of MANAGED_FILE_NAMES) {
+			const fileUri = vscode.Uri.joinPath(folder.uri, fileName);
+
+			if (await isValidJsonFile(fileUri)) {
+				nodes.push({
+					kind: 'managedFile',
+					folder,
+					fileName,
+				});
+			}
+		}
+
+		return nodes;
+	}
+}
+
+function formatMembershipKind(kind: ResourceMembershipInfo['kind']): string {
+	switch (kind) {
+		case 'direct':
+			return 'напрямую';
+		case 'insideSelectedFolder':
+			return 'через выбранную папку';
+		case 'containsSelectedDescendant':
+			return 'содержит выбранные элементы';
+	}
+}
+
+function formatFileCount(fileCount: number): string {
+	return `${fileCount} file(s)`;
 }
 
 async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
 	const folders = vscode.workspace.workspaceFolders;
 
 	if (!folders || folders.length === 0) {
-		void vscode.window.showErrorMessage(
-			'Context Bridge: сначала откройте папку или workspace в VS Code.'
-		);
+		void vscode.window.showErrorMessage('Context Bridge: сначала откройте папку или workspace в VS Code.');
 		return undefined;
 	}
 
@@ -487,7 +506,7 @@ async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | unde
 			folder,
 		})),
 		{
-			placeHolder: 'Выберите папку для инициализации файлов Context Bridge',
+			placeHolder: 'Выберите папку для инициализации Context Bridge',
 		}
 	);
 
@@ -495,25 +514,10 @@ async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | unde
 }
 
 async function initializeWorkspaceFiles(folder: vscode.WorkspaceFolder): Promise<void> {
-	const configUri = vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME);
-	const exportUri = vscode.Uri.joinPath(folder.uri, EXPORT_FILE_NAME);
-	const importUri = vscode.Uri.joinPath(folder.uri, IMPORT_FILE_NAME);
-
-	const existingFiles: string[] = [];
-
-	if (await fileExists(configUri)) {
-		existingFiles.push(CONFIG_FILE_NAME);
-	}
-	if (await fileExists(exportUri)) {
-		existingFiles.push(EXPORT_FILE_NAME);
-	}
-	if (await fileExists(importUri)) {
-		existingFiles.push(IMPORT_FILE_NAME);
-	}
+	const existingFiles = await getExistingManagedFiles(folder);
 
 	if (existingFiles.length > 0) {
 		const overwriteAction = 'Перезаписать';
-
 		const selectedAction = await vscode.window.showWarningMessage(
 			`В папке "${folder.name}" уже существуют файлы: ${existingFiles.join(', ')}.`,
 			{ modal: true },
@@ -525,16 +529,29 @@ async function initializeWorkspaceFiles(folder: vscode.WorkspaceFolder): Promise
 		}
 	}
 
-	await vscode.workspace.fs.writeFile(configUri, toJsonBytes(createDefaultConfig()));
-	await vscode.workspace.fs.writeFile(exportUri, toJsonBytes({}));
-	await vscode.workspace.fs.writeFile(importUri, toJsonBytes({}));
+	await vscode.workspace.fs.writeFile(
+		vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME),
+		toJsonBytes(createDefaultConfig())
+	);
+	await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder.uri, EXPORT_FILE_NAME), toJsonBytes({}));
+	await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder.uri, IMPORT_FILE_NAME), toJsonBytes({}));
 
-	const document = await vscode.workspace.openTextDocument(configUri);
+	const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME));
 	await vscode.window.showTextDocument(document);
 
-	void vscode.window.showInformationMessage(
-		`Context Bridge: файлы инициализированы в "${folder.name}".`
-	);
+	void vscode.window.showInformationMessage(`Context Bridge: файлы инициализированы в "${folder.name}".`);
+}
+
+async function getExistingManagedFiles(folder: vscode.WorkspaceFolder): Promise<ManagedFileName[]> {
+	const existingFiles: ManagedFileName[] = [];
+
+	for (const fileName of MANAGED_FILE_NAMES) {
+		if (await fileExists(vscode.Uri.joinPath(folder.uri, fileName))) {
+			existingFiles.push(fileName);
+		}
+	}
+
+	return existingFiles;
 }
 
 export function deactivate(): void {}
