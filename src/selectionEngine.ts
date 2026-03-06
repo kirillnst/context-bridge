@@ -45,10 +45,7 @@ export interface SelectionMutationResult {
 	selectionName?: string;
 }
 
-type ResourceMembershipKind =
-	| 'direct'
-	| 'insideSelectedFolder'
-	| 'containsSelectedDescendant';
+type ResourceMembershipKind = 'direct' | 'insideSelectedFolder' | 'containsSelectedDescendant';
 
 interface ResourceMembership {
 	selection: ContextBridgeSelection;
@@ -82,23 +79,25 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		);
 	}
 
-	public async getSelectionSummaries(
-		folder: vscode.WorkspaceFolder
-	): Promise<SelectionSummary[]> {
+	public async getSelectionSummaries(folder: vscode.WorkspaceFolder): Promise<SelectionSummary[]> {
 		const config = await this.readConfig(folder);
 		if (!config) {
 			return [];
 		}
 
-		return Promise.all(
-			config.selections.map(async (selection) => ({
-				selection: {
-					...selection,
-					items: await filterExistingItems(folder, selection.items),
-				},
-				fileCount: await countSelectionFiles(folder, selection.items),
-			}))
-		);
+		const summaries: SelectionSummary[] = [];
+
+		for (const selection of config.selections) {
+			const existingItems = await filterExistingItems(folder, selection.items);
+			const fileCount = await countSelectionFiles(folder, existingItems);
+
+			summaries.push({
+				selection: { ...selection, items: existingItems },
+				fileCount,
+			});
+		}
+
+		return summaries;
 	}
 
 	public async setSelectionActiveState(
@@ -123,21 +122,14 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 			}
 
 			changed = true;
-
-			return {
-				...selection,
-				active,
-			};
+			return { ...selection, active };
 		});
 
 		if (!changed) {
 			return true;
 		}
 
-		await writeContextBridgeConfig(folder, {
-			...config,
-			selections: nextSelections,
-		});
+		await writeContextBridgeConfig(folder, { ...config, selections: nextSelections });
 
 		this.invalidateFolderCache(folder);
 		this.fireDecorationRefreshForFolder(folder);
@@ -172,33 +164,19 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		const mutation = addItemToSelection(selection.items, targetItem);
 
 		if (!mutation.changed) {
-			return {
-				status: mutation.status,
-				selectionName: selection.name,
-			};
+			return { status: mutation.status, selectionName: selection.name };
 		}
 
 		const nextSelections = config.selections.map((current, index) =>
-			index === selectionIndex
-				? {
-					...current,
-					items: mutation.items,
-				}
-				: current
+			index === selectionIndex ? { ...current, items: mutation.items } : current
 		);
 
-		await writeContextBridgeConfig(folder, {
-			...config,
-			selections: nextSelections,
-		});
+		await writeContextBridgeConfig(folder, { ...config, selections: nextSelections });
 
 		this.invalidateFolderCache(folder);
 		this.fireDecorationRefreshForFolder(folder);
 
-		return {
-			status: 'added',
-			selectionName: selection.name,
-		};
+		return { status: 'added', selectionName: selection.name };
 	}
 
 	public async removeResourceFromSelection(
@@ -228,33 +206,51 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		const mutation = removeItemFromSelection(selection.items, targetItem);
 
 		if (!mutation.changed) {
-			return {
-				status: mutation.status,
-				selectionName: selection.name,
-			};
+			return { status: mutation.status, selectionName: selection.name };
 		}
 
 		const nextSelections = config.selections.map((current, index) =>
-			index === selectionIndex
-				? {
-					...current,
-					items: mutation.items,
-				}
-				: current
+			index === selectionIndex ? { ...current, items: mutation.items } : current
 		);
 
-		await writeContextBridgeConfig(folder, {
-			...config,
-			selections: nextSelections,
-		});
+		await writeContextBridgeConfig(folder, { ...config, selections: nextSelections });
 
 		this.invalidateFolderCache(folder);
 		this.fireDecorationRefreshForFolder(folder);
 
-		return {
-			status: 'removed',
-			selectionName: selection.name,
-		};
+		return { status: 'removed', selectionName: selection.name };
+	}
+
+	public async getMemberships(
+		resourceUri: vscode.Uri
+	): Promise<Array<{ selectionIndex: number; selection: ContextBridgeSelection; kind: ResourceMembershipKind }>> {
+		const folder = vscode.workspace.getWorkspaceFolder(resourceUri);
+		if (!folder) {
+			return [];
+		}
+
+		const relativePath = toRelativeWorkspacePath(folder, resourceUri);
+		if (!relativePath) {
+			return [];
+		}
+
+		const stat = await safeStat(resourceUri);
+		if (!stat) {
+			return [];
+		}
+
+		const isFolder = (stat.type & vscode.FileType.Directory) !== 0;
+
+		const config = await this.readConfig(folder);
+		if (!config) {
+			return [];
+		}
+
+		return getResourceMemberships(config.selections, relativePath, isFolder).map((m) => ({
+			selectionIndex: m.selectionIndex,
+			selection: m.selection,
+			kind: m.kind,
+		}));
 	}
 
 	public async provideFileDecoration(
@@ -281,47 +277,34 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		}
 
 		const isFolder = (stat.type & vscode.FileType.Directory) !== 0;
+
 		const config = await this.readConfig(folder);
 		if (!config) {
 			return undefined;
 		}
 
-		const memberships = getResourceMemberships(
-			config.selections,
-			relativePath,
-			isFolder
-		);
-
+		const memberships = getResourceMemberships(config.selections, relativePath, isFolder);
 		if (memberships.length === 0) {
 			return undefined;
 		}
 
-		const activeMemberships = memberships.filter((membership) => membership.selection.active);
-		const primaryMemberships = activeMemberships.length > 0
-			? activeMemberships
-			: memberships;
+		const activeMemberships = memberships.filter((m) => m.selection.active);
+		const primary = activeMemberships.length > 0 ? activeMemberships : memberships;
 
-		const badge = buildDecorationBadge(primaryMemberships);
+		const badge = buildDecorationBadge(primary);
 		const tooltip = buildDecorationTooltip(memberships);
 
 		const decoration = new vscode.FileDecoration(
 			badge,
 			tooltip,
-			new vscode.ThemeColor(
-				activeMemberships.length > 0
-					? 'list.highlightForeground'
-					: 'disabledForeground'
-			)
+			new vscode.ThemeColor(activeMemberships.length > 0 ? 'list.highlightForeground' : 'disabledForeground')
 		);
 
 		decoration.propagate = false;
-
 		return decoration;
 	}
 
-	private async readConfig(
-		folder: vscode.WorkspaceFolder
-	): Promise<ContextBridgeConfig | undefined> {
+	private async readConfig(folder: vscode.WorkspaceFolder): Promise<ContextBridgeConfig | undefined> {
 		const cacheKey = folder.uri.toString();
 
 		if (this.configCache.has(cacheKey)) {
@@ -361,96 +344,53 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 			return;
 		}
 
-		this.decorationEmitter.fire(folders.map((folder) => folder.uri));
+		this.decorationEmitter.fire(folders.map((f) => f.uri));
 	}
 }
 
 function addItemToSelection(
 	items: ContextBridgeItem[],
 	target: ContextBridgeItem
-): {
-	changed: boolean;
-	status: SelectionMutationStatus;
-	items: ContextBridgeItem[];
-} {
+): { changed: boolean; status: SelectionMutationStatus; items: ContextBridgeItem[] } {
 	if (target.type === 'file') {
-		if (items.some((item) => item.type === 'file' && item.path === target.path)) {
-			return {
-				changed: false,
-				status: 'alreadySelected',
-				items,
-			};
+		if (items.some((i) => i.type === 'file' && i.path === target.path)) {
+			return { changed: false, status: 'alreadySelected', items };
 		}
 
-		if (items.some((item) => item.type === 'folder' && isSameOrDescendantPath(target.path, item.path))) {
-			return {
-				changed: false,
-				status: 'coveredByFolder',
-				items,
-			};
+		if (items.some((i) => i.type === 'folder' && isSameOrDescendantPath(target.path, i.path))) {
+			return { changed: false, status: 'coveredByFolder', items };
 		}
 
-		return {
-			changed: true,
-			status: 'added',
-			items: [...items, target],
-		};
+		return { changed: true, status: 'added', items: [...items, target] };
 	}
 
-	if (items.some((item) => item.type === 'folder' && isSameOrDescendantPath(target.path, item.path))) {
-		return {
-			changed: false,
-			status: 'coveredByFolder',
-			items,
-		};
+	// folder
+	if (items.some((i) => i.type === 'folder' && isSameOrDescendantPath(target.path, i.path))) {
+		return { changed: false, status: 'coveredByFolder', items };
 	}
 
-	const nextItems = items.filter((item) => !isSameOrDescendantPath(item.path, target.path));
-
-	return {
-		changed: true,
-		status: 'added',
-		items: [...nextItems, target],
-	};
+	// if selecting a folder, drop any direct descendants (file or folder) already in items
+	const pruned = items.filter((i) => !isSameOrDescendantPath(i.path, target.path));
+	return { changed: true, status: 'added', items: [...pruned, target] };
 }
 
 function removeItemFromSelection(
 	items: ContextBridgeItem[],
 	target: ContextBridgeItem
-): {
-	changed: boolean;
-	status: SelectionMutationStatus;
-	items: ContextBridgeItem[];
-} {
-	const nextItems = items.filter(
-		(item) => !(item.type === target.type && item.path === target.path)
-	);
+): { changed: boolean; status: SelectionMutationStatus; items: ContextBridgeItem[] } {
+	const nextItems = items.filter((i) => !(i.type === target.type && i.path === target.path));
 
 	if (nextItems.length !== items.length) {
-		return {
-			changed: true,
-			status: 'removed',
-			items: nextItems,
-		};
+		return { changed: true, status: 'removed', items: nextItems };
 	}
 
-	const coveredByFolder = items.some(
-		(item) => item.type === 'folder' && isDescendantPath(target.path, item.path)
-	);
-
+	// if not directly selected but inside a selected folder -> can't exclude yet
+	const coveredByFolder = items.some((i) => i.type === 'folder' && isDescendantPath(target.path, i.path));
 	if (coveredByFolder) {
-		return {
-			changed: false,
-			status: 'notDirectItem',
-			items,
-		};
+		return { changed: false, status: 'notDirectItem', items };
 	}
 
-	return {
-		changed: false,
-		status: 'notFound',
-		items,
-	};
+	return { changed: false, status: 'notFound', items };
 }
 
 function getResourceMemberships(
@@ -462,13 +402,8 @@ function getResourceMemberships(
 
 	for (const [selectionIndex, selection] of selections.entries()) {
 		const kind = getSelectionMembershipKind(selection, resourcePath, isFolder);
-
 		if (kind) {
-			memberships.push({
-				selection,
-				selectionIndex,
-				kind,
-			});
+			memberships.push({ selection, selectionIndex, kind });
 		}
 	}
 
@@ -487,14 +422,13 @@ function getSelectionMembershipKind(
 			if (!isFolder && item.path === resourcePath) {
 				return 'direct';
 			}
-
 			if (isFolder && isDescendantPath(item.path, resourcePath)) {
 				containsSelectedDescendant = true;
 			}
-
 			continue;
 		}
 
+		// folder item
 		if (item.path === resourcePath) {
 			return 'direct';
 		}
@@ -508,31 +442,26 @@ function getSelectionMembershipKind(
 		}
 	}
 
-	return containsSelectedDescendant
-		? 'containsSelectedDescendant'
-		: undefined;
+	return containsSelectedDescendant ? 'containsSelectedDescendant' : undefined;
 }
 
 function buildDecorationBadge(memberships: ResourceMembership[]): string {
 	if (memberships.length === 1) {
 		return getSelectionBadge(memberships[0].selectionIndex);
 	}
-
-	return memberships.length < 10
-		? String(memberships.length)
-		: '+';
+	return memberships.length < 10 ? String(memberships.length) : '+';
 }
 
 function buildDecorationTooltip(memberships: ResourceMembership[]): string {
-	const lines = memberships.map((membership) => {
-		const state = membership.selection.active ? 'active' : 'inactive';
-		const mode = membership.kind === 'direct'
-			? 'direct'
-			: membership.kind === 'insideSelectedFolder'
-				? 'inside selected folder'
-				: 'contains selected descendants';
-
-		return `${membership.selection.name} (${state}) — ${mode}`;
+	const lines = memberships.map((m) => {
+		const state = m.selection.active ? 'active' : 'inactive';
+		const mode =
+			m.kind === 'direct'
+				? 'direct'
+				: m.kind === 'insideSelectedFolder'
+					? 'via selected folder'
+					: 'has selected descendants';
+		return `${m.selection.name} (${state}) — ${mode}`;
 	});
 
 	return `Context Bridge\n${lines.join('\n')}`;
@@ -551,17 +480,13 @@ export async function readContextBridgeConfig(
 	try {
 		const raw = await vscode.workspace.fs.readFile(configUri);
 		const parsed = JSON.parse(Buffer.from(raw).toString('utf8')) as unknown;
-
 		return normalizeConfig(parsed);
 	} catch {
 		return undefined;
 	}
 }
 
-export async function writeContextBridgeConfig(
-	folder: vscode.WorkspaceFolder,
-	config: ContextBridgeConfig
-): Promise<void> {
+export async function writeContextBridgeConfig(folder: vscode.WorkspaceFolder, config: ContextBridgeConfig): Promise<void> {
 	const configUri = vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME);
 	await vscode.workspace.fs.writeFile(configUri, toJsonBytes(config));
 }
@@ -585,7 +510,11 @@ function normalizeConfig(value: unknown): ContextBridgeConfig | undefined {
 
 	const selections = value.selections
 		.map((selection, index) => normalizeSelection(selection, index))
-		.filter((selection): selection is ContextBridgeSelection => selection !== undefined);
+		.filter((s): s is ContextBridgeSelection => s !== undefined);
+
+	if (selections.length === 0) {
+		return undefined;
+	}
 
 	return {
 		version: typeof value.version === 'number' ? value.version : 1,
@@ -593,10 +522,7 @@ function normalizeConfig(value: unknown): ContextBridgeConfig | undefined {
 	};
 }
 
-function normalizeSelection(
-	value: unknown,
-	index: number
-): ContextBridgeSelection | undefined {
+function normalizeSelection(value: unknown, index: number): ContextBridgeSelection | undefined {
 	if (!isRecord(value)) {
 		return undefined;
 	}
@@ -604,15 +530,11 @@ function normalizeSelection(
 	const itemsSource = Array.isArray(value.items) ? value.items : [];
 	const items = itemsSource
 		.map((item) => normalizeSelectionItem(item))
-		.filter((item): item is ContextBridgeItem => item !== undefined);
+		.filter((i): i is ContextBridgeItem => i !== undefined);
 
 	return {
-		id: typeof value.id === 'string' && value.id.trim().length > 0
-			? value.id
-			: `selection-${index + 1}`,
-		name: typeof value.name === 'string' && value.name.trim().length > 0
-			? value.name
-			: `Выборка ${index + 1}`,
+		id: typeof value.id === 'string' && value.id.trim().length > 0 ? value.id : `selection-${index + 1}`,
+		name: typeof value.name === 'string' && value.name.trim().length > 0 ? value.name : `Выборка ${index + 1}`,
 		active: typeof value.active === 'boolean' ? value.active : true,
 		items,
 	};
@@ -653,7 +575,6 @@ export async function filterExistingItems(
 
 			const uri = toWorkspaceRelativeUri(folder.uri, item.path);
 			const stat = await safeStat(uri);
-
 			if (!stat) {
 				return undefined;
 			}
@@ -664,7 +585,6 @@ export async function filterExistingItems(
 			if (item.type === 'folder' && isDir) {
 				return item;
 			}
-
 			if (item.type === 'file' && isFile) {
 				return item;
 			}
@@ -673,13 +593,10 @@ export async function filterExistingItems(
 		})
 	);
 
-	return checks.filter((item): item is ContextBridgeItem => item !== undefined);
+	return checks.filter((x): x is ContextBridgeItem => x !== undefined);
 }
 
-async function countSelectionFiles(
-	folder: vscode.WorkspaceFolder,
-	items: ContextBridgeItem[]
-): Promise<number> {
+async function countSelectionFiles(folder: vscode.WorkspaceFolder, items: ContextBridgeItem[]): Promise<number> {
 	const files = new Set<string>();
 
 	for (const item of items) {
@@ -690,11 +607,9 @@ async function countSelectionFiles(
 		if (item.type === 'file') {
 			const fileUri = toWorkspaceRelativeUri(folder.uri, item.path);
 			const stat = await safeStat(fileUri);
-
 			if (stat && (stat.type & vscode.FileType.File) !== 0) {
 				files.add(item.path);
 			}
-
 			continue;
 		}
 
@@ -704,11 +619,7 @@ async function countSelectionFiles(
 	return files.size;
 }
 
-async function collectFilesRecursively(
-	baseUri: vscode.Uri,
-	relativeFolderPath: string,
-	output: Set<string>
-): Promise<void> {
+async function collectFilesRecursively(baseUri: vscode.Uri, relativeFolderPath: string, output: Set<string>): Promise<void> {
 	const folderUri = toWorkspaceRelativeUri(baseUri, relativeFolderPath);
 
 	try {
@@ -716,9 +627,7 @@ async function collectFilesRecursively(
 
 		for (const [name, type] of entries) {
 			const childRelativePath = normalizeRelativePath(
-				relativeFolderPath.length > 0
-					? `${relativeFolderPath}/${name}`
-					: name
+				relativeFolderPath.length > 0 ? `${relativeFolderPath}/${name}` : name
 			);
 
 			if ((type & vscode.FileType.File) !== 0) {
@@ -740,7 +649,6 @@ async function toContextBridgeItem(
 	resourceUri: vscode.Uri
 ): Promise<ContextBridgeItem | undefined> {
 	const relativePath = toRelativeWorkspacePath(folder, resourceUri);
-
 	if (!relativePath || !isSafeRelativePath(relativePath)) {
 		return undefined;
 	}
@@ -751,33 +659,23 @@ async function toContextBridgeItem(
 	}
 
 	if ((stat.type & vscode.FileType.Directory) !== 0) {
-		return {
-			path: relativePath,
-			type: 'folder',
-		};
+		return { path: relativePath, type: 'folder' };
 	}
 
 	if ((stat.type & vscode.FileType.File) !== 0) {
-		return {
-			path: relativePath,
-			type: 'file',
-		};
+		return { path: relativePath, type: 'file' };
 	}
 
 	return undefined;
 }
 
-function toRelativeWorkspacePath(
-	folder: vscode.WorkspaceFolder,
-	uri: vscode.Uri
-): string | undefined {
+function toRelativeWorkspacePath(folder: vscode.WorkspaceFolder, uri: vscode.Uri): string | undefined {
 	if (folder.uri.scheme !== 'file' || uri.scheme !== 'file') {
 		return undefined;
 	}
 
 	const relativePath = path.relative(folder.uri.fsPath, uri.fsPath);
 	const normalized = normalizeRelativePath(relativePath);
-
 	return normalized.length > 0 ? normalized : undefined;
 }
 
@@ -804,7 +702,6 @@ export function isSafeRelativePath(targetPath: string): boolean {
 	}
 
 	const segments = normalized.split('/').filter(Boolean);
-
 	return !segments.some((segment) => segment === '..');
 }
 
@@ -825,14 +722,8 @@ export function getBaseName(targetPath: string): string {
 	return path.basename(normalized);
 }
 
-export function toWorkspaceRelativeUri(
-	baseUri: vscode.Uri,
-	relativePath: string
-): vscode.Uri {
-	const segments = relativePath
-		.split(/[\\/]+/)
-		.filter((segment) => segment.length > 0);
-
+export function toWorkspaceRelativeUri(baseUri: vscode.Uri, relativePath: string): vscode.Uri {
+	const segments = relativePath.split(/[\\/]+/).filter((segment) => segment.length > 0);
 	return vscode.Uri.joinPath(baseUri, ...segments);
 }
 

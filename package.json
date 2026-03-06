@@ -9,7 +9,14 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:contextBridgeExplorer",
+    "onCommand:context-bridge.initializeWorkspaceFiles",
+    "onCommand:context-bridge.activateSelection",
+    "onCommand:context-bridge.deactivateSelection",
+    "onCommand:context-bridge.addToSelection",
+    "onCommand:context-bridge.removeFromSelection"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -29,46 +36,29 @@
         "category": "Context Bridge"
       },
       {
-        "command": "context-bridge.addToSelection1",
-        "title": "Добавить в выборку 1",
+        "command": "context-bridge.addToSelection",
+        "title": "Добавить в выборку…",
         "category": "Context Bridge"
       },
       {
-        "command": "context-bridge.addToSelection2",
-        "title": "Добавить в выборку 2",
-        "category": "Context Bridge"
-      },
-      {
-        "command": "context-bridge.addToSelection3",
-        "title": "Добавить в выборку 3",
-        "category": "Context Bridge"
-      },
-      {
-        "command": "context-bridge.removeFromSelection1",
-        "title": "Убрать из выборки 1",
-        "category": "Context Bridge"
-      },
-      {
-        "command": "context-bridge.removeFromSelection2",
-        "title": "Убрать из выборки 2",
-        "category": "Context Bridge"
-      },
-      {
-        "command": "context-bridge.removeFromSelection3",
-        "title": "Убрать из выборки 3",
+        "command": "context-bridge.removeFromSelection",
+        "title": "Убрать из выборки…",
         "category": "Context Bridge"
       }
     ],
-    "views": {
-      "explorer": [
-        {
-          "id": "contextBridgeExplorer",
-          "name": "Context Bridge",
-          "when": "workspaceFolderCount != 0"
-        }
-      ]
-    },
     "menus": {
+      "explorer/context": [
+        {
+          "command": "context-bridge.addToSelection",
+          "when": "resourceScheme == file && isFileSystemResource",
+          "group": "7_contextBridge@1"
+        },
+        {
+          "command": "context-bridge.removeFromSelection",
+          "when": "resourceScheme == file && isFileSystemResource",
+          "group": "7_contextBridge@2"
+        }
+      ],
       "view/item/context": [
         {
           "command": "context-bridge.activateSelection",
@@ -77,38 +67,6 @@
         {
           "command": "context-bridge.deactivateSelection",
           "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.active"
-        }
-      ],
-      "explorer/context": [
-        {
-          "command": "context-bridge.addToSelection1",
-          "when": "resourceScheme == file && isFileSystemResource",
-          "group": "7_contextBridge_add@1"
-        },
-        {
-          "command": "context-bridge.addToSelection2",
-          "when": "resourceScheme == file && isFileSystemResource",
-          "group": "7_contextBridge_add@2"
-        },
-        {
-          "command": "context-bridge.addToSelection3",
-          "when": "resourceScheme == file && isFileSystemResource",
-          "group": "7_contextBridge_add@3"
-        },
-        {
-          "command": "context-bridge.removeFromSelection1",
-          "when": "resourceScheme == file && isFileSystemResource",
-          "group": "7_contextBridge_remove@1"
-        },
-        {
-          "command": "context-bridge.removeFromSelection2",
-          "when": "resourceScheme == file && isFileSystemResource",
-          "group": "7_contextBridge_remove@2"
-        },
-        {
-          "command": "context-bridge.removeFromSelection3",
-          "when": "resourceScheme == file && isFileSystemResource",
-          "group": "7_contextBridge_remove@3"
         }
       ]
     }
