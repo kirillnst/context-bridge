@@ -19,20 +19,11 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "contextBridge",
-          "title": "Context Bridge",
-          "icon": "media/context-bridge.svg"
-        }
-      ]
-    },
     "views": {
-      "contextBridge": [
+      "explorer": [
         {
           "id": "contextBridgeExplorer",
-          "name": "Selections"
+          "name": "Context Bridge"
         }
       ]
     },
