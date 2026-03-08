@@ -239,10 +239,7 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 
 		const decoration = new vscode.FileDecoration(
 			buildDecorationBadge(primaryMemberships),
-			buildDecorationTooltip(memberships),
-			new vscode.ThemeColor(
-				activeMemberships.length > 0 ? 'list.highlightForeground' : 'disabledForeground'
-			)
+			buildDecorationTooltip(memberships)
 		);
 
 		decoration.propagate = false;
@@ -415,7 +412,7 @@ function getSelectionMembershipKind(
 
 function buildDecorationBadge(memberships: ResourceMembershipInfo[]): string {
 	if (memberships.length === 1) {
-		return getSelectionBadge(memberships[0].selectionIndex);
+		return getSelectionBadge(memberships[0].selection.name);
 	}
 
 	return memberships.length < 10 ? String(memberships.length) : '+';
@@ -437,9 +434,25 @@ function buildDecorationTooltip(memberships: ResourceMembershipInfo[]): string {
 	return `Context Bridge\n${lines.join('\n')}`;
 }
 
-function getSelectionBadge(selectionIndex: number): string {
-	const value = selectionIndex + 1;
-	return value < 10 ? String(value) : '+';
+function getSelectionBadge(selectionName: string): string {
+	const trimmed = selectionName.trim();
+	if (trimmed.length === 0) {
+		return '?';
+	}
+
+	const parts = trimmed.split(/\s+/);
+
+	if (parts.length === 1) {
+		return parts[0].slice(0, 2).toUpperCase();
+	}
+
+	const acronym = parts
+		.map((p) => p[0])
+		.join('')
+		.slice(0, 2)
+		.toUpperCase();
+
+	return acronym.length > 0 ? acronym : trimmed.slice(0, 2).toUpperCase();
 }
 
 export async function readContextBridgeConfig(
