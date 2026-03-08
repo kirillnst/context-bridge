@@ -32,6 +32,7 @@ const EXPORT_DOCUMENT_FILE_NAME = 'context-bridge-export.txt';
 const MANAGED_FILE_NAMES = [CONFIG_FILE_NAME] as const;
 
 type ManagedFileName = (typeof MANAGED_FILE_NAMES)[number];
+type SelectionItemSource = 'item' | 'excludeItem';
 
 interface WorkspaceFolderQuickPickItem extends vscode.QuickPickItem {
 	folder: vscode.WorkspaceFolder;
@@ -59,6 +60,7 @@ interface SelectionItemNode {
 	kind: 'selectionItem';
 	folder: vscode.WorkspaceFolder;
 	item: ContextBridgeItem;
+	source: SelectionItemSource;
 }
 
 interface ManagedFileNode {
@@ -150,7 +152,7 @@ function registerSetSelectionActiveStateCommand(
 			return;
 		}
 
-		const ok = await selectionEngine.setSelectionActiveState(node.folder, node.selection.id, active);
+		const ok = await selectionEngine.setSelectionActiveState(node.folder, node.selection.name, active);
 		if (!ok) {
 			void vscode.window.showErrorMessage(
 				`Context Bridge: не удалось ${active ? 'активировать' : 'деактивировать'} выборку "${node.selection.name}".`
@@ -190,7 +192,7 @@ function registerAddToSelectionCommand(
 		const picked = await vscode.window.showQuickPick(
 			summaries.map((summary, index) => ({
 				label: summary.selection.name,
-				description: `${summary.selection.active ? 'активна' : 'неактивна'} • ${formatFileCount(summary.fileCount)}`,
+				description: `${summary.selection.short} • ${summary.selection.active ? 'активна' : 'неактивна'} • ${formatFileCount(summary.fileCount)}`,
 				index,
 			})),
 			{ placeHolder: 'Добавить ресурс в какую выборку?' }
@@ -237,7 +239,7 @@ function registerRemoveFromSelectionCommand(
 			const picked = await vscode.window.showQuickPick(
 				memberships.map((membership) => ({
 					label: membership.selection.name,
-					description: formatMembershipKind(membership.kind),
+					description: `${membership.selection.short} • ${formatMembershipKind(membership.kind)}`,
 					index: membership.selectionIndex,
 				})),
 				{ placeHolder: 'Убрать ресурс из какой выборки?' }
@@ -253,10 +255,10 @@ function registerRemoveFromSelectionCommand(
 
 			const result = await selectionEngine.removeResourceFromSelection(resourceUri, picked.index);
 
-			if (result.status === 'removed') {
+			if (result.status === 'removed' || result.status === 'excluded') {
 				explorerProvider.refresh();
 				void vscode.window.showInformationMessage(
-					`Context Bridge: убрано из "${result.selectionName ?? fallbackSelectionName ?? 'выборки'}".`
+					`Context Bridge: ${result.status === 'excluded' ? 'исключено из' : 'убрано из'} "${result.selectionName ?? fallbackSelectionName ?? 'выборки'}".`
 				);
 				return;
 			}
@@ -288,7 +290,7 @@ function handleSelectionMutationFailure(
 
 		case 'notDirectItem':
 			void vscode.window.showInformationMessage(
-				`Context Bridge: ресурс входит в "${selectionLabel}" не напрямую, а через выбранную папку. Точечные исключения пока не поддерживаются.`
+				`Context Bridge: ресурс в "${selectionLabel}" не выбран напрямую и не покрыт выбранной папкой. Уберите вложенные элементы отдельно.`
 			);
 			return;
 
@@ -370,12 +372,22 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 			case 'workspaceFolder':
 				return this.getWorkspaceContent(element.folder);
 
-			case 'selection':
-				return element.selection.items.map<SelectionItemNode>((item) => ({
+			case 'selection': {
+				const itemNodes = element.selection.items.map<SelectionItemNode>((item) => ({
 					kind: 'selectionItem',
 					folder: element.folder,
 					item,
+					source: 'item',
 				}));
+				const excludeNodes = element.selection.excludeItems.map<SelectionItemNode>((item) => ({
+					kind: 'selectionItem',
+					folder: element.folder,
+					item,
+					source: 'excludeItem',
+				}));
+
+				return [...itemNodes, ...excludeNodes];
+			}
 
 			case 'selectionItem':
 			case 'managedFile':
@@ -398,17 +410,18 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 				const isActive = element.selection.active;
 				const item = new vscode.TreeItem(element.selection.name, vscode.TreeItemCollapsibleState.Collapsed);
 
-				item.id = `contextBridge.selection:${element.folder.uri.toString()}:${element.selection.id}`;
+				item.id = `contextBridge.selection:${element.folder.uri.toString()}:${element.selection.name}`;
 				item.iconPath = isActive
 					? new vscode.ThemeIcon('list-tree')
 					: new vscode.ThemeIcon('list-tree', new vscode.ThemeColor('disabledForeground'));
 				item.description = isActive
-					? formatFileCount(element.fileCount)
-					: `${formatFileCount(element.fileCount)} • неактивна`;
+					? `${element.selection.short} • ${formatFileCount(element.fileCount)}`
+					: `${element.selection.short} • ${formatFileCount(element.fileCount)} • неактивна`;
 				item.tooltip =
-					`${element.selection.name}\n` +
+					`${element.selection.name} [${element.selection.short}]\n` +
 					`Файлы: ${element.fileCount}\n` +
 					`Прямые элементы: ${element.selection.items.length}\n` +
+					`Исключения: ${element.selection.excludeItems.length}\n` +
 					`Статус: ${isActive ? 'активна' : 'неактивна'}`;
 				item.contextValue = isActive
 					? 'contextBridge.selection.active'
@@ -420,13 +433,18 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 			case 'selectionItem': {
 				const targetUri = toWorkspaceRelativeUri(element.folder.uri, element.item.path);
 				const isFolder = element.item.type === 'folder';
+				const isExclude = element.source === 'excludeItem';
 				const item = new vscode.TreeItem(getBaseName(element.item.path), vscode.TreeItemCollapsibleState.None);
 
 				item.resourceUri = targetUri;
-				item.description = element.item.path;
-				item.tooltip = `${isFolder ? 'Папка' : 'Файл'}\n${element.item.path}`;
-				item.iconPath = new vscode.ThemeIcon(isFolder ? 'folder' : 'file');
-				item.contextValue = `contextBridge.selectionItem.${element.item.type}`;
+				item.description = isExclude ? `exclude • ${element.item.path}` : element.item.path;
+				item.tooltip = `${isExclude ? 'Исключение' : isFolder ? 'Папка' : 'Файл'}\n${element.item.path}`;
+				item.iconPath = isExclude
+					? new vscode.ThemeIcon('circle-slash')
+					: new vscode.ThemeIcon(isFolder ? 'folder' : 'file');
+				item.contextValue = isExclude
+					? `contextBridge.selectionExcludeItem.${element.item.type}`
+					: `contextBridge.selectionItem.${element.item.type}`;
 				item.command = isFolder
 					? {
 						command: 'revealInExplorer',
