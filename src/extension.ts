@@ -7,10 +7,13 @@ import {
 	ContextBridgeSelectionEngine,
 	ResourceMembershipInfo,
 	SelectionMutationResult,
+	buildExportDocument,
+	collectExportFiles,
 	createDefaultConfig,
 	fileExists,
 	getBaseName,
 	isValidJsonFile,
+	readContextBridgeConfig,
 	toJsonBytes,
 	toWorkspaceRelativeUri,
 } from './selectionEngine';
@@ -25,7 +28,7 @@ const COMMANDS = {
 } as const;
 
 const CONTEXT_BRIDGE_EXPLORER_VIEW_ID = 'contextBridgeExplorer';
-const EXPORT_DOCUMENT_FILE_NAME = 'context-bridge-export.json';
+const EXPORT_DOCUMENT_FILE_NAME = 'context-bridge-export.txt';
 const MANAGED_FILE_NAMES = [CONFIG_FILE_NAME] as const;
 
 type ManagedFileName = (typeof MANAGED_FILE_NAMES)[number];
@@ -123,7 +126,16 @@ function registerExportCommand(): vscode.Disposable {
 			return;
 		}
 
-		await openUntitledExportDocument(folder);
+		const config = await readContextBridgeConfig(folder);
+		if (!config) {
+			void vscode.window.showErrorMessage('Context Bridge: не найден корректный context-bridge.json.');
+			return;
+		}
+
+		const exportFiles = await collectExportFiles(folder);
+		const exportContent = buildExportDocument(exportFiles);
+
+		await openUntitledExportDocument(folder, exportContent);
 	});
 }
 
@@ -549,12 +561,23 @@ async function initializeWorkspaceFiles(folder: vscode.WorkspaceFolder): Promise
 	void vscode.window.showInformationMessage(`Context Bridge: файл инициализирован в "${folder.name}".`);
 }
 
-async function openUntitledExportDocument(folder: vscode.WorkspaceFolder): Promise<void> {
+async function openUntitledExportDocument(
+	folder: vscode.WorkspaceFolder,
+	content: string
+): Promise<void> {
 	const documentUri = vscode.Uri.parse(
 		`untitled:${path.join(folder.uri.fsPath, EXPORT_DOCUMENT_FILE_NAME)}`
 	);
 	const document = await vscode.workspace.openTextDocument(documentUri);
-	await vscode.window.showTextDocument(document);
+	const editor = await vscode.window.showTextDocument(document, { preview: false });
+	const fullRange = new vscode.Range(
+		document.positionAt(0),
+		document.positionAt(document.getText().length)
+	);
+
+	await editor.edit((editBuilder) => {
+		editBuilder.replace(fullRange, content);
+	});
 }
 
 async function getExistingManagedFiles(folder: vscode.WorkspaceFolder): Promise<ManagedFileName[]> {

@@ -27,6 +27,11 @@ export interface SelectionSummary {
 	fileCount: number;
 }
 
+export interface ContextBridgeExportFile {
+	path: string;
+	content: string;
+}
+
 export type SelectionMutationStatus =
 	| 'added'
 	| 'removed'
@@ -471,6 +476,58 @@ export function createDefaultConfig(): ContextBridgeConfig {
 	};
 }
 
+export async function collectExportFiles(
+	folder: vscode.WorkspaceFolder
+): Promise<ContextBridgeExportFile[]> {
+	const config = await readContextBridgeConfig(folder);
+	if (!config) {
+		return [];
+	}
+
+	const exportedPaths = new Set<string>();
+	const files: ContextBridgeExportFile[] = [];
+
+	for (const selection of config.selections) {
+		if (!selection.active) {
+			continue;
+		}
+
+		const existingItems = await filterExistingItems(folder, selection.items);
+		const filePaths = await collectSelectionFilePaths(folder, existingItems);
+
+		for (const filePath of filePaths) {
+			if (exportedPaths.has(filePath)) {
+				continue;
+			}
+
+			const fileUri = toWorkspaceRelativeUri(folder.uri, filePath);
+
+			try {
+				const raw = await vscode.workspace.fs.readFile(fileUri);
+				files.push({
+					path: filePath,
+					content: Buffer.from(raw).toString('utf8'),
+				});
+				exportedPaths.add(filePath);
+			} catch {
+				// ignored
+			}
+		}
+	}
+
+	return files;
+}
+
+export function buildExportDocument(files: ContextBridgeExportFile[]): string {
+	return files
+		.map((file) => `FILE: ${file.path}\n\nCONTENT:\n${normalizeExportText(file.content)}`)
+		.join('\n\n');
+}
+
+function normalizeExportText(value: string): string {
+	return value.replace(/\r\n/g, '\n');
+}
+
 function normalizeConfig(value: unknown): ContextBridgeConfig | undefined {
 	if (!isRecord(value) || !Array.isArray(value.selections)) {
 		return undefined;
@@ -566,6 +623,14 @@ export async function filterExistingItems(
 }
 
 async function countSelectionFiles(folder: vscode.WorkspaceFolder, items: ContextBridgeItem[]): Promise<number> {
+	const files = await collectSelectionFilePaths(folder, items);
+	return files.length;
+}
+
+async function collectSelectionFilePaths(
+	folder: vscode.WorkspaceFolder,
+	items: ContextBridgeItem[]
+): Promise<string[]> {
 	const files = new Set<string>();
 
 	for (const item of items) {
@@ -586,7 +651,7 @@ async function countSelectionFiles(folder: vscode.WorkspaceFolder, items: Contex
 		await collectFilesRecursively(folder.uri, item.path, files);
 	}
 
-	return files.size;
+	return [...files];
 }
 
 async function collectFilesRecursively(
@@ -598,8 +663,11 @@ async function collectFilesRecursively(
 
 	try {
 		const entries = await vscode.workspace.fs.readDirectory(folderUri);
+		const sortedEntries = [...entries].sort(([leftName], [rightName]) =>
+			leftName.localeCompare(rightName)
+		);
 
-		for (const [name, type] of entries) {
+		for (const [name, type] of sortedEntries) {
 			const childRelativePath = normalizeRelativePath(
 				relativeFolderPath.length > 0 ? `${relativeFolderPath}/${name}` : name
 			);
