@@ -1,8 +1,7 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	CONFIG_FILE_NAME,
-	EXPORT_FILE_NAME,
-	IMPORT_FILE_NAME,
 	ContextBridgeItem,
 	ContextBridgeSelection,
 	ContextBridgeSelectionEngine,
@@ -18,6 +17,7 @@ import {
 
 const COMMANDS = {
 	initializeWorkspaceFiles: 'context-bridge.initializeWorkspaceFiles',
+	exportSelection: 'context-bridge.exportSelection',
 	activateSelection: 'context-bridge.activateSelection',
 	deactivateSelection: 'context-bridge.deactivateSelection',
 	addToSelection: 'context-bridge.addToSelection',
@@ -25,7 +25,8 @@ const COMMANDS = {
 } as const;
 
 const CONTEXT_BRIDGE_EXPLORER_VIEW_ID = 'contextBridgeExplorer';
-const MANAGED_FILE_NAMES = [CONFIG_FILE_NAME, EXPORT_FILE_NAME, IMPORT_FILE_NAME] as const;
+const EXPORT_DOCUMENT_FILE_NAME = 'context-bridge-export.json';
+const MANAGED_FILE_NAMES = [CONFIG_FILE_NAME] as const;
 
 type ManagedFileName = (typeof MANAGED_FILE_NAMES)[number];
 
@@ -83,6 +84,7 @@ function registerCommands(
 ): vscode.Disposable[] {
 	return [
 		registerInitializeWorkspaceFilesCommand(explorerProvider),
+		registerExportCommand(),
 		registerSetSelectionActiveStateCommand(
 			COMMANDS.activateSelection,
 			true,
@@ -111,6 +113,17 @@ function registerInitializeWorkspaceFilesCommand(
 
 		await initializeWorkspaceFiles(folder);
 		explorerProvider.refresh();
+	});
+}
+
+function registerExportCommand(): vscode.Disposable {
+	return vscode.commands.registerCommand(COMMANDS.exportSelection, async () => {
+		const folder = await getTargetWorkspaceFolder();
+		if (!folder) {
+			return;
+		}
+
+		await openUntitledExportDocument(folder);
 	});
 }
 
@@ -287,7 +300,7 @@ function handleSelectionMutationFailure(
 
 		case 'configMissing':
 			void vscode.window.showErrorMessage(
-				'Context Bridge: сначала инициализируйте context-bridge.json, export.json и import.json.'
+				'Context Bridge: сначала инициализируйте context-bridge.json.'
 			);
 			return;
 
@@ -304,17 +317,13 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 		context: vscode.ExtensionContext,
 		private readonly selectionEngine: ContextBridgeSelectionEngine
 	) {
-		const watcherPatterns = [`**/${CONFIG_FILE_NAME}`, `**/${EXPORT_FILE_NAME}`, `**/${IMPORT_FILE_NAME}`];
+		const watcher = vscode.workspace.createFileSystemWatcher(`**/${CONFIG_FILE_NAME}`);
 
-		for (const pattern of watcherPatterns) {
-			const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+		watcher.onDidCreate(() => this.refresh());
+		watcher.onDidChange(() => this.refresh());
+		watcher.onDidDelete(() => this.refresh());
 
-			watcher.onDidCreate(() => this.refresh());
-			watcher.onDidChange(() => this.refresh());
-			watcher.onDidDelete(() => this.refresh());
-
-			context.subscriptions.push(watcher);
-		}
+		context.subscriptions.push(watcher);
 
 		context.subscriptions.push(
 			vscode.workspace.onDidCreateFiles(() => this.refresh()),
@@ -506,7 +515,7 @@ async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | unde
 			folder,
 		})),
 		{
-			placeHolder: 'Выберите папку для инициализации Context Bridge',
+			placeHolder: 'Выберите папку для Context Bridge',
 		}
 	);
 
@@ -533,13 +542,19 @@ async function initializeWorkspaceFiles(folder: vscode.WorkspaceFolder): Promise
 		vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME),
 		toJsonBytes(createDefaultConfig())
 	);
-	await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder.uri, EXPORT_FILE_NAME), toJsonBytes({}));
-	await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder.uri, IMPORT_FILE_NAME), toJsonBytes({}));
 
 	const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME));
 	await vscode.window.showTextDocument(document);
 
-	void vscode.window.showInformationMessage(`Context Bridge: файлы инициализированы в "${folder.name}".`);
+	void vscode.window.showInformationMessage(`Context Bridge: файл инициализирован в "${folder.name}".`);
+}
+
+async function openUntitledExportDocument(folder: vscode.WorkspaceFolder): Promise<void> {
+	const documentUri = vscode.Uri.parse(
+		`untitled:${path.join(folder.uri.fsPath, EXPORT_DOCUMENT_FILE_NAME)}`
+	);
+	const document = await vscode.workspace.openTextDocument(documentUri);
+	await vscode.window.showTextDocument(document);
 }
 
 async function getExistingManagedFiles(folder: vscode.WorkspaceFolder): Promise<ManagedFileName[]> {

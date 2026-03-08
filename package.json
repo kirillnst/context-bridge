@@ -23,7 +23,7 @@
     "viewsWelcome": [
       {
         "view": "contextBridgeExplorer",
-        "contents": "Context Bridge ещё не инициализирован.\n[Создать context-bridge.json, export.json и import.json](command:context-bridge.initializeWorkspaceFiles)",
+        "contents": "Context Bridge ещё не инициализирован.\n[Создать context-bridge.json](command:context-bridge.initializeWorkspaceFiles)",
         "when": "workspaceFolderCount != 0"
       },
       {
@@ -36,6 +36,11 @@
       {
         "command": "context-bridge.initializeWorkspaceFiles",
         "title": "Context Bridge: Initialize Workspace Files",
+        "category": "Context Bridge"
+      },
+      {
+        "command": "context-bridge.exportSelection",
+        "title": "Экспортировать",
         "category": "Context Bridge"
       },
       {
@@ -87,6 +92,11 @@
           "command": "context-bridge.initializeWorkspaceFiles",
           "when": "view == contextBridgeExplorer",
           "group": "navigation@1"
+        },
+        {
+          "command": "context-bridge.exportSelection",
+          "when": "view == contextBridgeExplorer",
+          "group": "navigation@2"
         }
       ]
     }

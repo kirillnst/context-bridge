@@ -2,8 +2,6 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 export const CONFIG_FILE_NAME = 'context-bridge.json';
-export const EXPORT_FILE_NAME = 'export.json';
-export const IMPORT_FILE_NAME = 'import.json';
 
 export type ContextBridgeItemType = 'file' | 'folder';
 
