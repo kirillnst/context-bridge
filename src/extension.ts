@@ -12,7 +12,6 @@ import {
 	createDefaultConfig,
 	fileExists,
 	getBaseName,
-	isValidJsonFile,
 	readContextBridgeConfig,
 	toJsonBytes,
 	toWorkspaceRelativeUri,
@@ -21,6 +20,7 @@ import {
 const COMMANDS = {
 	initializeWorkspaceFiles: 'context-bridge.initializeWorkspaceFiles',
 	exportSelection: 'context-bridge.exportSelection',
+	importSelection: 'context-bridge.importSelection',
 	activateSelection: 'context-bridge.activateSelection',
 	deactivateSelection: 'context-bridge.deactivateSelection',
 	addToSelection: 'context-bridge.addToSelection',
@@ -33,6 +33,10 @@ const MANAGED_FILE_NAMES = [CONFIG_FILE_NAME] as const;
 
 type ManagedFileName = (typeof MANAGED_FILE_NAMES)[number];
 type SelectionItemSource = 'item' | 'excludeItem';
+type ActionCommand =
+	| typeof COMMANDS.initializeWorkspaceFiles
+	| typeof COMMANDS.exportSelection
+	| typeof COMMANDS.importSelection;
 
 interface WorkspaceFolderQuickPickItem extends vscode.QuickPickItem {
 	folder: vscode.WorkspaceFolder;
@@ -42,7 +46,7 @@ type ContextBridgeNode =
 	| WorkspaceFolderNode
 	| SelectionNode
 	| SelectionItemNode
-	| ManagedFileNode;
+	| ActionNode;
 
 interface WorkspaceFolderNode {
 	kind: 'workspaceFolder';
@@ -63,10 +67,10 @@ interface SelectionItemNode {
 	source: SelectionItemSource;
 }
 
-interface ManagedFileNode {
-	kind: 'managedFile';
+interface ActionNode {
+	kind: 'action';
 	folder: vscode.WorkspaceFolder;
-	fileName: ManagedFileName;
+	command: ActionCommand;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -90,6 +94,7 @@ function registerCommands(
 	return [
 		registerInitializeWorkspaceFilesCommand(explorerProvider),
 		registerExportCommand(),
+		registerImportCommand(),
 		registerSetSelectionActiveStateCommand(
 			COMMANDS.activateSelection,
 			true,
@@ -110,35 +115,48 @@ function registerCommands(
 function registerInitializeWorkspaceFilesCommand(
 	explorerProvider: ContextBridgeExplorerProvider
 ): vscode.Disposable {
-	return vscode.commands.registerCommand(COMMANDS.initializeWorkspaceFiles, async () => {
-		const folder = await getTargetWorkspaceFolder();
-		if (!folder) {
-			return;
-		}
+	return vscode.commands.registerCommand(
+		COMMANDS.initializeWorkspaceFiles,
+		async (targetFolder?: vscode.WorkspaceFolder) => {
+			const folder = targetFolder ?? (await getTargetWorkspaceFolder());
+			if (!folder) {
+				return;
+			}
 
-		await initializeWorkspaceFiles(folder);
-		explorerProvider.refresh();
-	});
+			await initializeWorkspaceFiles(folder);
+			explorerProvider.refresh();
+		}
+	);
 }
 
 function registerExportCommand(): vscode.Disposable {
-	return vscode.commands.registerCommand(COMMANDS.exportSelection, async () => {
-		const folder = await getTargetWorkspaceFolder();
-		if (!folder) {
-			return;
+	return vscode.commands.registerCommand(
+		COMMANDS.exportSelection,
+		async (targetFolder?: vscode.WorkspaceFolder) => {
+			const folder = targetFolder ?? (await getTargetWorkspaceFolder());
+			if (!folder) {
+				return;
+			}
+
+			const config = await readContextBridgeConfig(folder);
+			if (!config) {
+				void vscode.window.showErrorMessage('Context Bridge: не найден корректный context-bridge.json.');
+				return;
+			}
+
+			const exportFiles = await collectExportFiles(folder);
+			const exportContent = buildExportDocument(exportFiles);
+
+			await openUntitledExportDocument(folder, exportContent);
 		}
+	);
+}
 
-		const config = await readContextBridgeConfig(folder);
-		if (!config) {
-			void vscode.window.showErrorMessage('Context Bridge: не найден корректный context-bridge.json.');
-			return;
-		}
-
-		const exportFiles = await collectExportFiles(folder);
-		const exportContent = buildExportDocument(exportFiles);
-
-		await openUntitledExportDocument(folder, exportContent);
-	});
+function registerImportCommand(): vscode.Disposable {
+	return vscode.commands.registerCommand(
+		COMMANDS.importSelection,
+		async (_targetFolder?: vscode.WorkspaceFolder) => {}
+	);
 }
 
 function registerSetSelectionActiveStateCommand(
@@ -390,7 +408,7 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 			}
 
 			case 'selectionItem':
-			case 'managedFile':
+			case 'action':
 				return [];
 		}
 	}
@@ -460,17 +478,19 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 				return item;
 			}
 
-			case 'managedFile': {
-				const fileUri = vscode.Uri.joinPath(element.folder.uri, element.fileName);
-				const item = new vscode.TreeItem(element.fileName, vscode.TreeItemCollapsibleState.None);
+			case 'action': {
+				const item = new vscode.TreeItem(
+					getActionLabel(element.command),
+					vscode.TreeItemCollapsibleState.None
+				);
 
-				item.resourceUri = fileUri;
-				item.tooltip = fileUri.fsPath;
-				item.contextValue = 'contextBridge.managedFile';
+				item.iconPath = new vscode.ThemeIcon(getActionIcon(element.command));
+				item.tooltip = getActionLabel(element.command);
+				item.contextValue = 'contextBridge.action';
 				item.command = {
-					command: 'vscode.open',
-					title: 'Open File',
-					arguments: [fileUri],
+					command: element.command,
+					title: getActionLabel(element.command),
+					arguments: [element.folder],
 				};
 
 				return item;
@@ -487,27 +507,49 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 			fileCount: summary.fileCount,
 		}));
 
-		const managedFileNodes = await this.getManagedFileNodes(folder);
-
-		return [...selectionNodes, ...managedFileNodes];
+		return [...selectionNodes, ...this.getActionNodes(folder)];
 	}
 
-	private async getManagedFileNodes(folder: vscode.WorkspaceFolder): Promise<ManagedFileNode[]> {
-		const nodes: ManagedFileNode[] = [];
+	private getActionNodes(folder: vscode.WorkspaceFolder): ActionNode[] {
+		return [
+			{
+				kind: 'action',
+				folder,
+				command: COMMANDS.initializeWorkspaceFiles,
+			},
+			{
+				kind: 'action',
+				folder,
+				command: COMMANDS.exportSelection,
+			},
+			{
+				kind: 'action',
+				folder,
+				command: COMMANDS.importSelection,
+			},
+		];
+	}
+}
 
-		for (const fileName of MANAGED_FILE_NAMES) {
-			const fileUri = vscode.Uri.joinPath(folder.uri, fileName);
+function getActionLabel(command: ActionCommand): string {
+	switch (command) {
+		case COMMANDS.initializeWorkspaceFiles:
+			return 'Инициализировать';
+		case COMMANDS.exportSelection:
+			return 'Экспортировать';
+		case COMMANDS.importSelection:
+			return 'Импортировать';
+	}
+}
 
-			if (await isValidJsonFile(fileUri)) {
-				nodes.push({
-					kind: 'managedFile',
-					folder,
-					fileName,
-				});
-			}
-		}
-
-		return nodes;
+function getActionIcon(command: ActionCommand): string {
+	switch (command) {
+		case COMMANDS.initializeWorkspaceFiles:
+			return 'add';
+		case COMMANDS.exportSelection:
+			return 'arrow-up';
+		case COMMANDS.importSelection:
+			return 'arrow-down';
 	}
 }
 

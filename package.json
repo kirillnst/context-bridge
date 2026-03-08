@@ -44,6 +44,11 @@
         "category": "Context Bridge"
       },
       {
+        "command": "context-bridge.importSelection",
+        "title": "Импортировать",
+        "category": "Context Bridge"
+      },
+      {
         "command": "context-bridge.activateSelection",
         "title": "Активировать выборку",
         "category": "Context Bridge"
@@ -85,18 +90,6 @@
         {
           "command": "context-bridge.deactivateSelection",
           "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.active"
-        }
-      ],
-      "view/title": [
-        {
-          "command": "context-bridge.initializeWorkspaceFiles",
-          "when": "view == contextBridgeExplorer",
-          "group": "navigation@1"
-        },
-        {
-          "command": "context-bridge.exportSelection",
-          "when": "view == contextBridgeExplorer",
-          "group": "navigation@2"
         }
       ]
     }
