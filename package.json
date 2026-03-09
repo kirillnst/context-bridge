@@ -23,12 +23,12 @@
     "viewsWelcome": [
       {
         "view": "contextBridgeExplorer",
-        "contents": "Context Bridge ещё не инициализирован.\n[Создать .vscode/context-bridge.json](command:context-bridge.initializeWorkspaceFiles)",
+        "contents": "Context Bridge is not initialized yet.\n[Create .vscode/context-bridge.json](command:context-bridge.initializeWorkspaceFiles)",
         "when": "workspaceFolderCount != 0"
       },
       {
         "view": "contextBridgeExplorer",
-        "contents": "Откройте папку или workspace, чтобы использовать Context Bridge.",
+        "contents": "Open a folder or workspace to use Context Bridge.",
         "when": "workspaceFolderCount == 0"
       }
     ],
@@ -40,32 +40,32 @@
       },
       {
         "command": "context-bridge.exportSelection",
-        "title": "Экспортировать",
+        "title": "Export",
         "category": "Context Bridge"
       },
       {
         "command": "context-bridge.importSelection",
-        "title": "Импортировать",
+        "title": "Import",
         "category": "Context Bridge"
       },
       {
         "command": "context-bridge.activateSelection",
-        "title": "Активировать выборку",
+        "title": "Activate Selection",
         "category": "Context Bridge"
       },
       {
         "command": "context-bridge.deactivateSelection",
-        "title": "Деактивировать выборку",
+        "title": "Deactivate Selection",
         "category": "Context Bridge"
       },
       {
         "command": "context-bridge.addToSelection",
-        "title": "Добавить в выборку…",
+        "title": "Add to Selection…",
         "category": "Context Bridge"
       },
       {
         "command": "context-bridge.removeFromSelection",
-        "title": "Убрать из выборки…",
+        "title": "Remove from Selection…",
         "category": "Context Bridge"
       }
     ],

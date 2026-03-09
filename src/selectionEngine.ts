@@ -490,13 +490,13 @@ function buildDecorationBadge(memberships: ResourceMembershipInfo[]): string {
 
 function buildDecorationTooltip(memberships: ResourceMembershipInfo[]): string {
 	const lines = memberships.map((membership) => {
-		const state = membership.selection.active ? 'активна' : 'неактивна';
+		const state = membership.selection.active ? 'active' : 'inactive';
 		const mode =
 			membership.kind === 'direct'
-				? 'напрямую'
+				? 'directly'
 				: membership.kind === 'insideSelectedFolder'
-					? 'через выбранную папку'
-					: 'содержит выбранные элементы';
+					? 'through selected folder'
+					: 'contains selected items';
 
 		return `${membership.selection.name} [${membership.selection.short}] (${state}) — ${mode}`;
 	});
@@ -640,7 +640,7 @@ async function applyContextBridgePatchFile(
 ): Promise<void> {
 	const sourcePath = normalizeRelativePath(patchFile.path);
 	if (!isSafeRelativePath(sourcePath)) {
-		throw new Error(`некорректный путь "${patchFile.path}".`);
+		throw new Error(`invalid path "${patchFile.path}".`);
 	}
 
 	try {
@@ -651,12 +651,12 @@ async function applyContextBridgePatchFile(
 
 				const stat = await safeStat(targetUri);
 				if (!stat || (stat.type & vscode.FileType.File) === 0) {
-					throw new Error(`файл "${sourcePath}" для modify не найден.`);
+					throw new Error(`file "${sourcePath}" for modify was not found.`);
 				}
 
 				const currentContent = await readTextFile(targetUri);
 				if (currentContent === undefined) {
-					throw new Error(`не удалось прочитать "${sourcePath}".`);
+					throw new Error(`failed to read "${sourcePath}".`);
 				}
 
 				const nextContent = applyPatchModifyOperations(
@@ -679,7 +679,7 @@ async function applyContextBridgePatchFile(
 				ensureDocumentNotDirty(targetUri, sourcePath);
 
 				if (await fileExists(targetUri)) {
-					throw new Error(`файл "${sourcePath}" уже существует.`);
+					throw new Error(`file "${sourcePath}" already exists.`);
 				}
 
 				await ensureParentDirectory(folder.uri, sourcePath);
@@ -698,7 +698,7 @@ async function applyContextBridgePatchFile(
 
 				const stat = await safeStat(targetUri);
 				if (!stat) {
-					throw new Error(`путь "${sourcePath}" для delete не найден.`);
+					throw new Error(`path "${sourcePath}" for delete was not found.`);
 				}
 
 				await vscode.workspace.fs.delete(targetUri, {
@@ -713,11 +713,11 @@ async function applyContextBridgePatchFile(
 			case 'move': {
 				const destinationPath = normalizeRelativePath(patchFile.to ?? '');
 				if (!isSafeRelativePath(destinationPath)) {
-					throw new Error(`некорректный путь назначения "${patchFile.to ?? ''}".`);
+					throw new Error(`invalid destination path "${patchFile.to ?? ''}".`);
 				}
 
 				if (destinationPath === sourcePath) {
-					throw new Error(`исходный и целевой путь совпадают: "${sourcePath}".`);
+					throw new Error(`source and destination paths are the same: "${sourcePath}".`);
 				}
 
 				const sourceUri = toWorkspaceRelativeUri(folder.uri, sourcePath);
@@ -727,11 +727,11 @@ async function applyContextBridgePatchFile(
 				ensureDocumentNotDirty(destinationUri, destinationPath);
 
 				if (!(await fileExists(sourceUri))) {
-					throw new Error(`путь "${sourcePath}" для move не найден.`);
+					throw new Error(`path "${sourcePath}" for move was not found.`);
 				}
 
 				if (await fileExists(destinationUri)) {
-					throw new Error(`путь назначения "${destinationPath}" уже существует.`);
+					throw new Error(`destination path "${destinationPath}" already exists.`);
 				}
 
 				await ensureParentDirectory(folder.uri, destinationPath);
@@ -779,13 +779,13 @@ function extractPatchContent(value: string): string {
 function parseContextBridgePatch(value: string): ParsedContextBridgePatchFile[] {
 	const matches = [...value.matchAll(/^FILE:\s+(.+)$/gm)];
 	if (matches.length === 0) {
-		throw new Error('не найден ни один блок FILE.');
+		throw new Error('no FILE blocks were found.');
 	}
 
 	return matches.map((match, index) => {
 		const filePath = (match[1] ?? '').trim();
 		if (filePath.length === 0) {
-			throw new Error(`пустой путь в блоке FILE #${index + 1}.`);
+			throw new Error(`empty path in FILE block #${index + 1}.`);
 		}
 
 		const blockStart = (match.index ?? 0) + match[0].length;
@@ -805,7 +805,7 @@ function parseContextBridgePatchFile(
 	const actionPrefix = 'ACTION: ';
 
 	if (!actionLine.line.startsWith(actionPrefix)) {
-		throw new Error(`для "${filePath}" не найден ACTION.`);
+		throw new Error(`ACTION was not found for "${filePath}".`);
 	}
 
 	const action = actionLine.line.slice(actionPrefix.length).trim() as ContextBridgePatchAction;
@@ -817,7 +817,7 @@ function parseContextBridgePatchFile(
 			const operations = parseModifyOperations(blockBody.slice(cursor));
 
 			if (operations.length === 0) {
-				throw new Error(`для "${filePath}" не найден ни один SEARCH/REPLACE блок.`);
+				throw new Error(`no SEARCH/REPLACE blocks were found for "${filePath}".`);
 			}
 
 			return {
@@ -836,7 +836,7 @@ function parseContextBridgePatchFile(
 
 		case 'delete': {
 			if (blockBody.slice(cursor).trim().length > 0) {
-				throw new Error(`для "${filePath}" ACTION: delete не должен содержать дополнительный текст.`);
+				throw new Error(`ACTION: delete for "${filePath}" must not contain any extra text.`);
 			}
 
 			return {
@@ -850,16 +850,16 @@ function parseContextBridgePatchFile(
 			const toLine = readPatchLine(blockBody, cursor);
 
 			if (!toLine.line.startsWith('TO: ')) {
-				throw new Error(`для "${filePath}" не найден TO.`);
+				throw new Error(`TO was not found for "${filePath}".`);
 			}
 
 			if (blockBody.slice(toLine.next).trim().length > 0) {
-				throw new Error(`для "${filePath}" ACTION: move содержит лишний текст после TO.`);
+				throw new Error(`ACTION: move for "${filePath}" contains extra text after TO.`);
 			}
 
 			const to = toLine.line.slice('TO: '.length).trim();
 			if (to.length === 0) {
-				throw new Error(`для "${filePath}" путь назначения TO пустой.`);
+				throw new Error(`TO destination path is empty for "${filePath}".`);
 			}
 
 			return {
@@ -870,7 +870,7 @@ function parseContextBridgePatchFile(
 		}
 
 		default:
-			throw new Error(`для "${filePath}" указан неподдерживаемый ACTION: ${actionLine.line.slice(actionPrefix.length).trim()}.`);
+			throw new Error(`unsupported ACTION for "${filePath}": ${actionLine.line.slice(actionPrefix.length).trim()}.`);
 	}
 }
 
@@ -884,14 +884,14 @@ function parseModifyOperations(value: string): ContextBridgePatchSearchReplace[]
 
 	while (remaining.length > 0) {
 		if (!remaining.startsWith('SEARCH:\n')) {
-			throw new Error('ожидался блок SEARCH:.');
+			throw new Error('expected a SEARCH block.');
 		}
 
 		remaining = remaining.slice('SEARCH:\n'.length);
 
 		const replaceMarker = remaining.indexOf('\n\nREPLACE:\n');
 		if (replaceMarker < 0) {
-			throw new Error('для SEARCH не найден следующий REPLACE:.');
+			throw new Error('REPLACE block was not found for SEARCH.');
 		}
 
 		const search = remaining.slice(0, replaceMarker);
@@ -930,16 +930,16 @@ function applyPatchModifyOperations(
 		}
 
 		if (operation.search.length === 0) {
-			throw new Error(`SEARCH #${index + 1} пустой.`);
+			throw new Error(`SEARCH #${index + 1} is empty.`);
 		}
 
 		const matches = countExactMatches(nextValue, operation.search);
 		if (matches === 0) {
-			throw new Error(`SEARCH #${index + 1} не найден точно.`);
+			throw new Error(`SEARCH #${index + 1} was not found exactly.`);
 		}
 
 		if (matches > 1) {
-			throw new Error(`SEARCH #${index + 1} найден ${matches} раз(а); замена неоднозначна.`);
+			throw new Error(`SEARCH #${index + 1} was found ${matches} time(s); replacement is ambiguous.`);
 		}
 
 		nextValue = replaceSingleMatch(nextValue, operation.search, operation.replace);
@@ -1010,7 +1010,7 @@ function ensureDocumentNotDirty(uri: vscode.Uri, relativePath: string): void {
 	);
 
 	if (document?.isDirty) {
-		throw new Error(`сохраните или отмените несохранённые изменения в "${relativePath}".`);
+		throw new Error(`save or revert unsaved changes in "${relativePath}".`);
 	}
 }
 
@@ -1049,8 +1049,10 @@ function applyLineEnding(value: string, lineEnding: '\n' | '\r\n'): string {
 }
 
 function toImportErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : 'неизвестная ошибка.';
+	return error instanceof Error ? error.message : 'unknown error.';
 }
+
+
 
 function normalizeConfig(value: unknown): ContextBridgeConfig | undefined {
 	if (!isRecord(value) || !Array.isArray(value.selections)) {

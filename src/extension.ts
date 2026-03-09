@@ -30,7 +30,10 @@ const COMMANDS = {
 } as const;
 
 const CONTEXT_BRIDGE_EXPLORER_VIEW_ID = 'contextBridgeExplorer';
-const BRIDGE_DOCUMENT_URI = vscode.Uri.parse('context-bridge://bridge');
+const BRIDGE_DOCUMENT_URI = vscode.Uri.from({
+	scheme: 'context-bridge',
+	path: '/bridge',
+});
 const MANAGED_FILE_PATHS = [CONFIG_FILE_PATH] as const;
 
 type ManagedFilePath = (typeof MANAGED_FILE_PATHS)[number];
@@ -185,11 +188,7 @@ class ContextBridgeVirtualFileSystemProvider implements vscode.FileSystemProvide
 	}
 
 	private isBridgeUri(uri: vscode.Uri): boolean {
-		return (
-			uri.scheme === BRIDGE_DOCUMENT_URI.scheme &&
-			uri.authority === BRIDGE_DOCUMENT_URI.authority &&
-			(uri.path === BRIDGE_DOCUMENT_URI.path || uri.path === '/')
-		);
+		return uri.scheme === BRIDGE_DOCUMENT_URI.scheme && uri.path === BRIDGE_DOCUMENT_URI.path;
 	}
 
 	private emitChanged(): void {
@@ -276,7 +275,9 @@ function registerExportCommand(
 
 			const config = await readContextBridgeConfig(folder);
 			if (!config) {
-				void vscode.window.showErrorMessage('Context Bridge: не найден корректный .vscode/context-bridge.json.');
+				void vscode.window.showErrorMessage(
+					'Context Bridge: valid .vscode/context-bridge.json was not found.'
+				);
 				return;
 			}
 
@@ -299,7 +300,7 @@ function registerImportCommand(
 			const patchText = await bridgeDocumentProvider.getContent();
 			if (patchText.trim().length === 0) {
 				void vscode.window.showErrorMessage(
-					'Context Bridge: документ context-bridge://bridge пустой.'
+					'Context Bridge: the context-bridge://bridge document is empty.'
 				);
 				return;
 			}
@@ -319,8 +320,8 @@ function registerImportCommand(
 
 				void vscode.window.showInformationMessage(
 					appliedCount === 0
-						? 'Context Bridge: импорт выполнен, изменений нет.'
-						: `Context Bridge: импорт выполнен (${formatImportSummary(summary)}).`
+						? 'Context Bridge: import completed, no changes.'
+						: `Context Bridge: import completed (${formatImportSummary(summary)}).`
 				);
 			} catch (error) {
 				explorerProvider.refresh();
@@ -333,17 +334,17 @@ function registerImportCommand(
 						error.summary.moved;
 					const partialSuffix =
 						appliedCount > 0
-							? ` Уже применено: ${formatImportSummary(error.summary)}.`
+							? ` Already applied: ${formatImportSummary(error.summary)}.`
 							: '';
 
 					void vscode.window.showErrorMessage(
-						`Context Bridge: импорт не завершён. ${error.message}${partialSuffix}`
+						`Context Bridge: import did not finish. ${error.message}${partialSuffix}`
 					);
 					return;
 				}
 
-				const message = error instanceof Error ? error.message : 'неизвестная ошибка.';
-				void vscode.window.showErrorMessage(`Context Bridge: импорт не выполнен. ${message}`);
+				const message = error instanceof Error ? error.message : 'unknown error.';
+				void vscode.window.showErrorMessage(`Context Bridge: import failed. ${message}`);
 			}
 		}
 	);
@@ -363,14 +364,14 @@ function registerSetSelectionActiveStateCommand(
 		const ok = await selectionEngine.setSelectionActiveState(node.folder, node.selection.name, active);
 		if (!ok) {
 			void vscode.window.showErrorMessage(
-				`Context Bridge: не удалось ${active ? 'активировать' : 'деактивировать'} выборку "${node.selection.name}".`
+				`Context Bridge: could not ${active ? 'activate' : 'deactivate'} selection "${node.selection.name}".`
 			);
 			return;
 		}
 
 		explorerProvider.refresh();
 		void vscode.window.showInformationMessage(
-			`Context Bridge: выборка "${node.selection.name}" ${active ? 'активирована' : 'деактивирована'}.`
+			`Context Bridge: selection "${node.selection.name}" ${active ? 'activated' : 'deactivated'}.`
 		);
 	});
 }
@@ -392,7 +393,7 @@ function registerAddToSelectionCommand(
 		const summaries = await selectionEngine.getSelectionSummaries(folder);
 		if (summaries.length === 0) {
 			void vscode.window.showErrorMessage(
-				'Context Bridge: не найден .vscode/context-bridge.json или в нём нет корректных выборок.'
+				'Context Bridge: .vscode/context-bridge.json was not found or does not contain valid selections.'
 			);
 			return;
 		}
@@ -400,10 +401,10 @@ function registerAddToSelectionCommand(
 		const picked = await vscode.window.showQuickPick(
 			summaries.map((summary, index) => ({
 				label: summary.selection.name,
-				description: `${summary.selection.short} • ${summary.selection.active ? 'активна' : 'неактивна'} • ${formatFileCount(summary.fileCount)}`,
+				description: `${summary.selection.short} • ${summary.selection.active ? 'active' : 'inactive'} • ${formatFileCount(summary.fileCount)}`,
 				index,
 			})),
-			{ placeHolder: 'Добавить ресурс в какую выборку?' }
+			{ placeHolder: 'Which selection should this resource be added to?' }
 		);
 
 		if (!picked) {
@@ -416,7 +417,7 @@ function registerAddToSelectionCommand(
 		if (result.status === 'added') {
 			explorerProvider.refresh();
 			void vscode.window.showInformationMessage(
-				`Context Bridge: добавлено в "${result.selectionName ?? fallbackSelectionName ?? 'выборку'}".`
+				`Context Bridge: added to "${result.selectionName ?? fallbackSelectionName ?? 'selection'}".`
 			);
 			return;
 		}
@@ -439,7 +440,7 @@ function registerRemoveFromSelectionCommand(
 			const memberships = await selectionEngine.getMemberships(resourceUri);
 			if (memberships.length === 0) {
 				void vscode.window.showInformationMessage(
-					'Context Bridge: этот ресурс не входит ни в одну выборку.'
+					'Context Bridge: this resource is not part of any selection.'
 				);
 				return;
 			}
@@ -450,7 +451,7 @@ function registerRemoveFromSelectionCommand(
 					description: `${membership.selection.short} • ${formatMembershipKind(membership.kind)}`,
 					index: membership.selectionIndex,
 				})),
-				{ placeHolder: 'Убрать ресурс из какой выборки?' }
+				{ placeHolder: 'Remove this resource from which selection?' }
 			);
 
 			if (!picked) {
@@ -466,7 +467,7 @@ function registerRemoveFromSelectionCommand(
 			if (result.status === 'removed' || result.status === 'excluded') {
 				explorerProvider.refresh();
 				void vscode.window.showInformationMessage(
-					`Context Bridge: ${result.status === 'excluded' ? 'исключено из' : 'убрано из'} "${result.selectionName ?? fallbackSelectionName ?? 'выборки'}".`
+					`Context Bridge: ${result.status === 'excluded' ? 'excluded from' : 'removed from'} "${result.selectionName ?? fallbackSelectionName ?? 'selection'}".`
 				);
 				return;
 			}
@@ -481,53 +482,53 @@ function handleSelectionMutationFailure(
 	selectionIndex: number,
 	fallbackSelectionName?: string
 ): void {
-	const selectionLabel = result.selectionName ?? fallbackSelectionName ?? `Выборка #${selectionIndex + 1}`;
+	const selectionLabel = result.selectionName ?? fallbackSelectionName ?? `Selection #${selectionIndex + 1}`;
 
 	switch (result.status) {
 		case 'alreadySelected':
 			void vscode.window.showInformationMessage(
-				`Context Bridge: ресурс уже добавлен в "${selectionLabel}".`
+				`Context Bridge: resource is already added to "${selectionLabel}".`
 			);
 			return;
 
 		case 'coveredByFolder':
 			void vscode.window.showInformationMessage(
-				`Context Bridge: ресурс уже входит в "${selectionLabel}" через выбранную папку.`
+				`Context Bridge: resource is already included in "${selectionLabel}" through a selected folder.`
 			);
 			return;
 
 		case 'notDirectItem':
 			void vscode.window.showInformationMessage(
-				`Context Bridge: ресурс в "${selectionLabel}" не выбран напрямую и не покрыт выбранной папкой. Уберите вложенные элементы отдельно.`
+				`Context Bridge: resource in "${selectionLabel}" is not selected directly and is not covered by a selected folder. Remove nested items separately.`
 			);
 			return;
 
 		case 'notFound':
 			void vscode.window.showInformationMessage(
-				`Context Bridge: ресурс не найден в "${selectionLabel}" как прямой элемент.`
+				`Context Bridge: resource was not found in "${selectionLabel}" as a direct item.`
 			);
 			return;
 
 		case 'selectionNotFound':
 			void vscode.window.showErrorMessage(
-				`Context Bridge: выборка не найдена (index=${selectionIndex}).`
+				`Context Bridge: selection not found (index=${selectionIndex}).`
 			);
 			return;
 
 		case 'invalidResource':
 			void vscode.window.showErrorMessage(
-				'Context Bridge: не удалось определить ресурс файла или папки.'
+				'Context Bridge: could not determine the file or folder resource.'
 			);
 			return;
 
 		case 'configMissing':
 			void vscode.window.showErrorMessage(
-				'Context Bridge: сначала инициализируйте .vscode/context-bridge.json.'
+				'Context Bridge: initialize .vscode/context-bridge.json first.'
 			);
 			return;
 
 		default:
-			void vscode.window.showErrorMessage('Context Bridge: операция не выполнена.');
+			void vscode.window.showErrorMessage('Context Bridge: operation failed.');
 	}
 }
 
@@ -624,13 +625,13 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 					: new vscode.ThemeIcon('list-tree', new vscode.ThemeColor('disabledForeground'));
 				item.description = isActive
 					? `${element.selection.short} • ${formatFileCount(element.fileCount)}`
-					: `${element.selection.short} • ${formatFileCount(element.fileCount)} • неактивна`;
+					: `${element.selection.short} • ${formatFileCount(element.fileCount)} • inactive`;
 				item.tooltip =
 					`${element.selection.name} [${element.selection.short}]\n` +
-					`Файлы: ${element.fileCount}\n` +
-					`Прямые элементы: ${element.selection.items.length}\n` +
-					`Исключения: ${element.selection.excludeItems.length}\n` +
-					`Статус: ${isActive ? 'активна' : 'неактивна'}`;
+					`Files: ${element.fileCount}\n` +
+					`Direct items: ${element.selection.items.length}\n` +
+					`Exclusions: ${element.selection.excludeItems.length}\n` +
+					`Status: ${isActive ? 'active' : 'inactive'}`;
 				item.contextValue = isActive
 					? 'contextBridge.selection.active'
 					: 'contextBridge.selection.inactive';
@@ -646,7 +647,7 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 
 				item.resourceUri = targetUri;
 				item.description = isExclude ? `exclude • ${element.item.path}` : element.item.path;
-				item.tooltip = `${isExclude ? 'Исключение' : isFolder ? 'Папка' : 'Файл'}\n${element.item.path}`;
+				item.tooltip = `${isExclude ? 'Excluded item' : isFolder ? 'Folder' : 'File'}\n${element.item.path}`;
 				item.iconPath = isExclude
 					? new vscode.ThemeIcon('circle-slash')
 					: new vscode.ThemeIcon(isFolder ? 'folder' : 'file');
@@ -724,11 +725,11 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 function getActionLabel(command: ActionCommand): string {
 	switch (command) {
 		case COMMANDS.initializeWorkspaceFiles:
-			return 'Инициализировать';
+			return 'Initialize';
 		case COMMANDS.exportSelection:
-			return 'Экспортировать';
+			return 'Export';
 		case COMMANDS.importSelection:
-			return 'Импортировать';
+			return 'Import';
 	}
 }
 
@@ -746,11 +747,11 @@ function getActionIcon(command: ActionCommand): string {
 function formatMembershipKind(kind: ResourceMembershipInfo['kind']): string {
 	switch (kind) {
 		case 'direct':
-			return 'напрямую';
+			return 'directly';
 		case 'insideSelectedFolder':
-			return 'через выбранную папку';
+			return 'through selected folder';
 		case 'containsSelectedDescendant':
-			return 'содержит выбранные элементы';
+			return 'contains selected items';
 	}
 }
 
@@ -784,7 +785,9 @@ async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | unde
 	const folders = vscode.workspace.workspaceFolders;
 
 	if (!folders || folders.length === 0) {
-		void vscode.window.showErrorMessage('Context Bridge: сначала откройте папку или workspace в VS Code.');
+		void vscode.window.showErrorMessage(
+			'Context Bridge: first open a folder or workspace in VS Code.'
+		);
 		return undefined;
 	}
 
@@ -799,7 +802,7 @@ async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | unde
 			folder,
 		})),
 		{
-			placeHolder: 'Выберите папку для Context Bridge',
+			placeHolder: 'Select a folder for Context Bridge',
 		}
 	);
 
@@ -810,9 +813,9 @@ async function initializeWorkspaceFiles(folder: vscode.WorkspaceFolder): Promise
 	const existingFiles = await getExistingManagedFiles(folder);
 
 	if (existingFiles.length > 0) {
-		const overwriteAction = 'Перезаписать';
+		const overwriteAction = 'Overwrite';
 		const selectedAction = await vscode.window.showWarningMessage(
-			`В папке "${folder.name}" уже существуют файлы: ${existingFiles.join(', ')}.`,
+			`The following files already exist in "${folder.name}": ${existingFiles.join(', ')}.`,
 			{ modal: true },
 			overwriteAction
 		);
@@ -830,9 +833,11 @@ async function initializeWorkspaceFiles(folder: vscode.WorkspaceFolder): Promise
 	await vscode.window.showTextDocument(document);
 
 	void vscode.window.showInformationMessage(
-		`Context Bridge: файл "${CONFIG_FILE_PATH}" инициализирован в "${folder.name}".`
+		`Context Bridge: "${CONFIG_FILE_PATH}" was initialized in "${folder.name}".`
 	);
 }
+
+
 
 async function openBridgeDocument(): Promise<void> {
 	const document = await vscode.workspace.openTextDocument(BRIDGE_DOCUMENT_URI);
