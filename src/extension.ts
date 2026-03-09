@@ -9,9 +9,12 @@ import {
 	SelectionMutationResult,
 	buildExportDocument,
 	collectExportFiles,
+	ContextBridgeImportError,
+	ContextBridgeImportSummary,
 	createDefaultConfig,
 	fileExists,
 	getBaseName,
+	importContextBridgePatch,
 	readContextBridgeConfig,
 	toJsonBytes,
 	toWorkspaceRelativeUri,
@@ -94,7 +97,7 @@ function registerCommands(
 	return [
 		registerInitializeWorkspaceFilesCommand(explorerProvider),
 		registerExportCommand(),
-		registerImportCommand(),
+		registerImportCommand(explorerProvider),
 		registerSetSelectionActiveStateCommand(
 			COMMANDS.activateSelection,
 			true,
@@ -152,10 +155,68 @@ function registerExportCommand(): vscode.Disposable {
 	);
 }
 
-function registerImportCommand(): vscode.Disposable {
+function registerImportCommand(
+	explorerProvider: ContextBridgeExplorerProvider
+): vscode.Disposable {
 	return vscode.commands.registerCommand(
 		COMMANDS.importSelection,
-		async (_targetFolder?: vscode.WorkspaceFolder) => {}
+		async (targetFolder?: vscode.WorkspaceFolder) => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) {
+				void vscode.window.showErrorMessage(
+					'Context Bridge: откройте документ с patch-ответом и повторите импорт.'
+				);
+				return;
+			}
+
+			const patchText = editor.document.getText();
+			if (patchText.trim().length === 0) {
+				void vscode.window.showErrorMessage('Context Bridge: активный документ пустой.');
+				return;
+			}
+
+			const folder = targetFolder ?? (await getTargetWorkspaceFolder());
+			if (!folder) {
+				return;
+			}
+
+			try {
+				const summary = await importContextBridgePatch(folder, patchText);
+
+				explorerProvider.refresh();
+
+				const appliedCount =
+					summary.added + summary.modified + summary.deleted + summary.moved;
+
+				void vscode.window.showInformationMessage(
+					appliedCount === 0
+						? 'Context Bridge: импорт выполнен, изменений нет.'
+						: `Context Bridge: импорт выполнен (${formatImportSummary(summary)}).`
+				);
+			} catch (error) {
+				explorerProvider.refresh();
+
+				if (error instanceof ContextBridgeImportError) {
+					const appliedCount =
+						error.summary.added +
+						error.summary.modified +
+						error.summary.deleted +
+						error.summary.moved;
+					const partialSuffix =
+						appliedCount > 0
+							? ` Уже применено: ${formatImportSummary(error.summary)}.`
+							: '';
+
+					void vscode.window.showErrorMessage(
+						`Context Bridge: импорт не завершён. ${error.message}${partialSuffix}`
+					);
+					return;
+				}
+
+				const message = error instanceof Error ? error.message : 'неизвестная ошибка.';
+				void vscode.window.showErrorMessage(`Context Bridge: импорт не выполнен. ${message}`);
+			}
+		}
 	);
 }
 
@@ -566,6 +627,28 @@ function formatMembershipKind(kind: ResourceMembershipInfo['kind']): string {
 
 function formatFileCount(fileCount: number): string {
 	return `${fileCount} file(s)`;
+}
+
+function formatImportSummary(summary: ContextBridgeImportSummary): string {
+	const parts: string[] = [];
+
+	if (summary.modified > 0) {
+		parts.push(`изменено ${summary.modified}`);
+	}
+
+	if (summary.added > 0) {
+		parts.push(`добавлено ${summary.added}`);
+	}
+
+	if (summary.deleted > 0) {
+		parts.push(`удалено ${summary.deleted}`);
+	}
+
+	if (summary.moved > 0) {
+		parts.push(`перемещено ${summary.moved}`);
+	}
+
+	return parts.length > 0 ? parts.join(', ') : 'изменений нет';
 }
 
 async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
