@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "selections": [
+    {
+      "name": "Primary",
+      "short": "PR",
+      "active": true,
+      "items": [
+        {
+          "path": "src",
+          "type": "folder"
+        },
+        {
+          "path": "package.json",
+          "type": "file"
+        }
+      ],
+      "excludeItems": [
+        {
+          "path": "src/media",
+          "type": "folder"
+        },
+        {
+          "path": "src/test",
+          "type": "folder"
+        }
+      ]
+    },
+    {
+      "name": "Additional",
+      "short": "AD",
+      "active": true,
+      "items": [],
+      "excludeItems": []
+    }
+  ]
+}
