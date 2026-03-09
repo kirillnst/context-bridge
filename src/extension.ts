@@ -1,4 +1,3 @@
-import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	CONFIG_FILE_PATH,
@@ -31,7 +30,7 @@ const COMMANDS = {
 } as const;
 
 const CONTEXT_BRIDGE_EXPLORER_VIEW_ID = 'contextBridgeExplorer';
-const EXPORT_DOCUMENT_FILE_NAME = 'context-bridge-export.txt';
+const BRIDGE_DOCUMENT_URI = vscode.Uri.parse('context-bridge://bridge');
 const MANAGED_FILE_PATHS = [CONFIG_FILE_PATH] as const;
 
 type ManagedFilePath = (typeof MANAGED_FILE_PATHS)[number];
@@ -76,28 +75,160 @@ interface ActionNode {
 	command: ActionCommand;
 }
 
+class ContextBridgeVirtualFileSystemProvider implements vscode.FileSystemProvider {
+	private readonly fileChangeEmitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
+	private content = new Uint8Array();
+	private modifiedAt = Date.now();
+
+	public readonly onDidChangeFile = this.fileChangeEmitter.event;
+
+	public watch(
+		_uri: vscode.Uri,
+		_options: { recursive: boolean; excludes: string[] }
+	): vscode.Disposable {
+		return new vscode.Disposable(() => undefined);
+	}
+
+	public stat(uri: vscode.Uri): vscode.FileStat {
+		this.ensureBridgeUri(uri);
+
+		return {
+			type: vscode.FileType.File,
+			ctime: 0,
+			mtime: this.modifiedAt,
+			size: this.content.byteLength,
+		};
+	}
+
+	public readDirectory(_uri: vscode.Uri): [string, vscode.FileType][] {
+		return [];
+	}
+
+	public createDirectory(_uri: vscode.Uri): void {
+		throw vscode.FileSystemError.NoPermissions(
+			'Context Bridge virtual document does not support directories.'
+		);
+	}
+
+	public readFile(uri: vscode.Uri): Uint8Array {
+		this.ensureBridgeUri(uri);
+		return this.content;
+	}
+
+	public writeFile(
+		uri: vscode.Uri,
+		content: Uint8Array,
+		_options: { create: boolean; overwrite: boolean }
+	): void {
+		this.ensureBridgeUri(uri);
+		this.content = Uint8Array.from(content);
+		this.modifiedAt = Date.now();
+		this.emitChanged();
+	}
+
+	public delete(_uri: vscode.Uri, _options: { recursive: boolean }): void {
+		throw vscode.FileSystemError.NoPermissions(
+			'Context Bridge virtual document cannot be deleted.'
+		);
+	}
+
+	public rename(
+		_oldUri: vscode.Uri,
+		_newUri: vscode.Uri,
+		_options: { overwrite: boolean }
+	): void {
+		throw vscode.FileSystemError.NoPermissions(
+			'Context Bridge virtual document cannot be renamed.'
+		);
+	}
+
+	public async replaceContent(content: string): Promise<void> {
+		const document = this.getOpenDocument();
+
+		if (document) {
+			const editor = await vscode.window.showTextDocument(document, { preview: false });
+			const fullRange = new vscode.Range(
+				document.positionAt(0),
+				document.positionAt(document.getText().length)
+			);
+
+			await editor.edit((editBuilder) => {
+				editBuilder.replace(fullRange, content);
+			});
+			await document.save();
+			return;
+		}
+
+		this.content = Buffer.from(content, 'utf8');
+		this.modifiedAt = Date.now();
+		this.emitChanged();
+	}
+
+	public async getContent(): Promise<string> {
+		const document = this.getOpenDocument();
+		if (document) {
+			return document.getText();
+		}
+
+		const raw = await vscode.workspace.fs.readFile(BRIDGE_DOCUMENT_URI);
+		return Buffer.from(raw).toString('utf8');
+	}
+
+	private getOpenDocument(): vscode.TextDocument | undefined {
+		return vscode.workspace.textDocuments.find((document) => this.isBridgeUri(document.uri));
+	}
+
+	private ensureBridgeUri(uri: vscode.Uri): void {
+		if (!this.isBridgeUri(uri)) {
+			throw vscode.FileSystemError.FileNotFound(uri);
+		}
+	}
+
+	private isBridgeUri(uri: vscode.Uri): boolean {
+		return (
+			uri.scheme === BRIDGE_DOCUMENT_URI.scheme &&
+			uri.authority === BRIDGE_DOCUMENT_URI.authority &&
+			(uri.path === BRIDGE_DOCUMENT_URI.path || uri.path === '/')
+		);
+	}
+
+	private emitChanged(): void {
+		this.fileChangeEmitter.fire([
+			{
+				type: vscode.FileChangeType.Changed,
+				uri: BRIDGE_DOCUMENT_URI,
+			},
+		]);
+	}
+}
+
 export function activate(context: vscode.ExtensionContext): void {
 	const selectionEngine = new ContextBridgeSelectionEngine(context);
 	const explorerProvider = new ContextBridgeExplorerProvider(context, selectionEngine);
+	const bridgeDocumentProvider = new ContextBridgeVirtualFileSystemProvider();
 
 	context.subscriptions.push(
+		vscode.workspace.registerFileSystemProvider('context-bridge', bridgeDocumentProvider, {
+			isCaseSensitive: true,
+		}),
 		vscode.window.createTreeView(CONTEXT_BRIDGE_EXPLORER_VIEW_ID, {
 			treeDataProvider: explorerProvider,
 			showCollapseAll: true,
 		}),
 		vscode.window.registerFileDecorationProvider(selectionEngine),
-		...registerCommands(explorerProvider, selectionEngine)
+		...registerCommands(explorerProvider, selectionEngine, bridgeDocumentProvider)
 	);
 }
 
 function registerCommands(
 	explorerProvider: ContextBridgeExplorerProvider,
-	selectionEngine: ContextBridgeSelectionEngine
+	selectionEngine: ContextBridgeSelectionEngine,
+	bridgeDocumentProvider: ContextBridgeVirtualFileSystemProvider
 ): vscode.Disposable[] {
 	return [
 		registerInitializeWorkspaceFilesCommand(explorerProvider),
-		registerExportCommand(),
-		registerImportCommand(explorerProvider),
+		registerExportCommand(bridgeDocumentProvider),
+		registerImportCommand(explorerProvider, bridgeDocumentProvider),
 		registerSetSelectionActiveStateCommand(
 			COMMANDS.activateSelection,
 			true,
@@ -132,7 +263,9 @@ function registerInitializeWorkspaceFilesCommand(
 	);
 }
 
-function registerExportCommand(): vscode.Disposable {
+function registerExportCommand(
+	bridgeDocumentProvider: ContextBridgeVirtualFileSystemProvider
+): vscode.Disposable {
 	return vscode.commands.registerCommand(
 		COMMANDS.exportSelection,
 		async (targetFolder?: vscode.WorkspaceFolder) => {
@@ -150,28 +283,24 @@ function registerExportCommand(): vscode.Disposable {
 			const exportFiles = await collectExportFiles(folder);
 			const exportContent = buildExportDocument(exportFiles);
 
-			await openUntitledExportDocument(folder, exportContent);
+			await bridgeDocumentProvider.replaceContent(exportContent);
+			await openBridgeDocument();
 		}
 	);
 }
 
 function registerImportCommand(
-	explorerProvider: ContextBridgeExplorerProvider
+	explorerProvider: ContextBridgeExplorerProvider,
+	bridgeDocumentProvider: ContextBridgeVirtualFileSystemProvider
 ): vscode.Disposable {
 	return vscode.commands.registerCommand(
 		COMMANDS.importSelection,
 		async (targetFolder?: vscode.WorkspaceFolder) => {
-			const editor = vscode.window.activeTextEditor;
-			if (!editor) {
-				void vscode.window.showErrorMessage(
-					'Context Bridge: откройте документ с patch-ответом и повторите импорт.'
-				);
-				return;
-			}
-
-			const patchText = editor.document.getText();
+			const patchText = await bridgeDocumentProvider.getContent();
 			if (patchText.trim().length === 0) {
-				void vscode.window.showErrorMessage('Context Bridge: активный документ пустой.');
+				void vscode.window.showErrorMessage(
+					'Context Bridge: документ context-bridge://bridge пустой.'
+				);
 				return;
 			}
 
@@ -705,23 +834,9 @@ async function initializeWorkspaceFiles(folder: vscode.WorkspaceFolder): Promise
 	);
 }
 
-async function openUntitledExportDocument(
-	folder: vscode.WorkspaceFolder,
-	content: string
-): Promise<void> {
-	const documentUri = vscode.Uri.parse(
-		`untitled:${path.join(folder.uri.fsPath, EXPORT_DOCUMENT_FILE_NAME)}`
-	);
-	const document = await vscode.workspace.openTextDocument(documentUri);
-	const editor = await vscode.window.showTextDocument(document, { preview: false });
-	const fullRange = new vscode.Range(
-		document.positionAt(0),
-		document.positionAt(document.getText().length)
-	);
-
-	await editor.edit((editBuilder) => {
-		editBuilder.replace(fullRange, content);
-	});
+async function openBridgeDocument(): Promise<void> {
+	const document = await vscode.workspace.openTextDocument(BRIDGE_DOCUMENT_URI);
+	await vscode.window.showTextDocument(document, { preview: false });
 }
 
 async function getExistingManagedFiles(folder: vscode.WorkspaceFolder): Promise<ManagedFilePath[]> {
