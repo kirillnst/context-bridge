@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-	CONFIG_FILE_NAME,
+	CONFIG_FILE_PATH,
 	ContextBridgeItem,
 	ContextBridgeSelection,
 	ContextBridgeSelectionEngine,
@@ -16,8 +16,8 @@ import {
 	getBaseName,
 	importContextBridgePatch,
 	readContextBridgeConfig,
-	toJsonBytes,
 	toWorkspaceRelativeUri,
+	writeContextBridgeConfig,
 } from './selectionEngine';
 
 const COMMANDS = {
@@ -32,9 +32,9 @@ const COMMANDS = {
 
 const CONTEXT_BRIDGE_EXPLORER_VIEW_ID = 'contextBridgeExplorer';
 const EXPORT_DOCUMENT_FILE_NAME = 'context-bridge-export.txt';
-const MANAGED_FILE_NAMES = [CONFIG_FILE_NAME] as const;
+const MANAGED_FILE_PATHS = [CONFIG_FILE_PATH] as const;
 
-type ManagedFileName = (typeof MANAGED_FILE_NAMES)[number];
+type ManagedFilePath = (typeof MANAGED_FILE_PATHS)[number];
 type SelectionItemSource = 'item' | 'excludeItem';
 type ActionCommand =
 	| typeof COMMANDS.initializeWorkspaceFiles
@@ -143,7 +143,7 @@ function registerExportCommand(): vscode.Disposable {
 
 			const config = await readContextBridgeConfig(folder);
 			if (!config) {
-				void vscode.window.showErrorMessage('Context Bridge: не найден корректный context-bridge.json.');
+				void vscode.window.showErrorMessage('Context Bridge: не найден корректный .vscode/context-bridge.json.');
 				return;
 			}
 
@@ -263,7 +263,7 @@ function registerAddToSelectionCommand(
 		const summaries = await selectionEngine.getSelectionSummaries(folder);
 		if (summaries.length === 0) {
 			void vscode.window.showErrorMessage(
-				'Context Bridge: не найден context-bridge.json или в нём нет корректных выборок.'
+				'Context Bridge: не найден .vscode/context-bridge.json или в нём нет корректных выборок.'
 			);
 			return;
 		}
@@ -393,7 +393,7 @@ function handleSelectionMutationFailure(
 
 		case 'configMissing':
 			void vscode.window.showErrorMessage(
-				'Context Bridge: сначала инициализируйте context-bridge.json.'
+				'Context Bridge: сначала инициализируйте .vscode/context-bridge.json.'
 			);
 			return;
 
@@ -410,7 +410,7 @@ class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBr
 		context: vscode.ExtensionContext,
 		private readonly selectionEngine: ContextBridgeSelectionEngine
 	) {
-		const watcher = vscode.workspace.createFileSystemWatcher(`**/${CONFIG_FILE_NAME}`);
+		const watcher = vscode.workspace.createFileSystemWatcher(`**/${CONFIG_FILE_PATH}`);
 
 		watcher.onDidCreate(() => this.refresh());
 		watcher.onDidChange(() => this.refresh());
@@ -693,15 +693,16 @@ async function initializeWorkspaceFiles(folder: vscode.WorkspaceFolder): Promise
 		}
 	}
 
-	await vscode.workspace.fs.writeFile(
-		vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME),
-		toJsonBytes(createDefaultConfig())
-	);
+	await writeContextBridgeConfig(folder, createDefaultConfig());
 
-	const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME));
+	const document = await vscode.workspace.openTextDocument(
+		toWorkspaceRelativeUri(folder.uri, CONFIG_FILE_PATH)
+	);
 	await vscode.window.showTextDocument(document);
 
-	void vscode.window.showInformationMessage(`Context Bridge: файл инициализирован в "${folder.name}".`);
+	void vscode.window.showInformationMessage(
+		`Context Bridge: файл "${CONFIG_FILE_PATH}" инициализирован в "${folder.name}".`
+	);
 }
 
 async function openUntitledExportDocument(
@@ -723,16 +724,18 @@ async function openUntitledExportDocument(
 	});
 }
 
-async function getExistingManagedFiles(folder: vscode.WorkspaceFolder): Promise<ManagedFileName[]> {
-	const existingFiles: ManagedFileName[] = [];
+async function getExistingManagedFiles(folder: vscode.WorkspaceFolder): Promise<ManagedFilePath[]> {
+	const existingFiles: ManagedFilePath[] = [];
 
-	for (const fileName of MANAGED_FILE_NAMES) {
-		if (await fileExists(vscode.Uri.joinPath(folder.uri, fileName))) {
-			existingFiles.push(fileName);
+	for (const filePath of MANAGED_FILE_PATHS) {
+		if (await fileExists(toWorkspaceRelativeUri(folder.uri, filePath))) {
+			existingFiles.push(filePath);
 		}
 	}
 
 	return existingFiles;
 }
+
+
 
 export function deactivate(): void {}

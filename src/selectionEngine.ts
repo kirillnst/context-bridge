@@ -2,6 +2,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 export const CONFIG_FILE_NAME = 'context-bridge.json';
+export const CONFIG_DIRECTORY_NAME = '.vscode';
+export const CONFIG_FILE_PATH = `${CONFIG_DIRECTORY_NAME}/${CONFIG_FILE_NAME}`;
 
 export type ContextBridgeItemType = 'file' | 'folder';
 
@@ -104,7 +106,7 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 	public readonly onDidChangeFileDecorations = this.decorationEmitter.event;
 
 	constructor(context: vscode.ExtensionContext) {
-		const configWatcher = vscode.workspace.createFileSystemWatcher(`**/${CONFIG_FILE_NAME}`);
+		const configWatcher = vscode.workspace.createFileSystemWatcher(`**/${CONFIG_FILE_PATH}`);
 
 		configWatcher.onDidCreate((uri) => this.handleConfigChanged(uri));
 		configWatcher.onDidChange((uri) => this.handleConfigChanged(uri));
@@ -505,7 +507,7 @@ function buildDecorationTooltip(memberships: ResourceMembershipInfo[]): string {
 export async function readContextBridgeConfig(
 	folder: vscode.WorkspaceFolder
 ): Promise<ContextBridgeConfig | undefined> {
-	const configUri = vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME);
+	const configUri = toWorkspaceRelativeUri(folder.uri, CONFIG_FILE_PATH);
 
 	try {
 		const raw = await vscode.workspace.fs.readFile(configUri);
@@ -520,9 +522,13 @@ export async function writeContextBridgeConfig(
 	folder: vscode.WorkspaceFolder,
 	config: ContextBridgeConfig
 ): Promise<void> {
-	const configUri = vscode.Uri.joinPath(folder.uri, CONFIG_FILE_NAME);
+	await vscode.workspace.fs.createDirectory(toWorkspaceRelativeUri(folder.uri, CONFIG_DIRECTORY_NAME));
+
+	const configUri = toWorkspaceRelativeUri(folder.uri, CONFIG_FILE_PATH);
 	await vscode.workspace.fs.writeFile(configUri, toJsonBytes(config));
 }
+
+
 
 export function createDefaultConfig(): ContextBridgeConfig {
 	return {

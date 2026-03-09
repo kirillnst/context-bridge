@@ -23,7 +23,7 @@
     "viewsWelcome": [
       {
         "view": "contextBridgeExplorer",
-        "contents": "Context Bridge ещё не инициализирован.\n[Создать context-bridge.json](command:context-bridge.initializeWorkspaceFiles)",
+        "contents": "Context Bridge ещё не инициализирован.\n[Создать .vscode/context-bridge.json](command:context-bridge.initializeWorkspaceFiles)",
         "when": "workspaceFolderCount != 0"
       },
       {
