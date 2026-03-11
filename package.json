@@ -1,5 +1,6 @@
 {
   "name": "context-bridge",
+  "repository": "https://github.com/kirillnst/context-bridge.git",
   "displayName": "Context Bridge",
   "description": "Build workspace context selections for LLM prompts and apply structured patch responses back to the project.",
   "version": "0.1.0",
