@@ -13,13 +13,25 @@
         {
           "path": "package.json",
           "type": "file"
+        },
+        {
+          "path": "src/media/context-bridge.svg",
+          "type": "file"
+        },
+        {
+          "path": "esbuild.js",
+          "type": "file"
+        },
+        {
+          "path": "eslint.config.mjs",
+          "type": "file"
+        },
+        {
+          "path": "tsconfig.json",
+          "type": "file"
         }
       ],
       "excludeItems": [
-        {
-          "path": "src/media",
-          "type": "folder"
-        },
         {
           "path": "src/test",
           "type": "folder"

@@ -72,14 +72,16 @@ function createEmptyImportSummary(): ContextBridgeImportSummary {
 
 function extractPatchContent(value: string): string {
 	const normalized = normalizeExportText(value);
-	const fencedMatch = normalized.match(/```context-bridge-patch\s*\n([\s\S]*?)\n```/);
+	const fencedMatch = normalized.match(
+		/^(`{3,})context-bridge-patch(?:[^\n]*)\n([\s\S]*?)^\1\s*$/m
+	);
 
 	if (fencedMatch) {
-		return fencedMatch[1];
+		return fencedMatch[2];
 	}
 
-	const noChangesMatch = normalized.match(/^\s*NO_CHANGES\s*$/m);
-	if (noChangesMatch) {
+	const trimmed = normalized.trim();
+	if (trimmed === 'NO_CHANGES') {
 		return 'NO_CHANGES';
 	}
 
@@ -88,7 +90,7 @@ function extractPatchContent(value: string): string {
 		return normalized.slice(firstFileMatch.index);
 	}
 
-	return normalized.trim();
+	return trimmed;
 }
 
 function parseContextBridgePatch(value: string): ParsedContextBridgePatchFile[] {
