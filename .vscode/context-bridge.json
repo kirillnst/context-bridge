@@ -29,6 +29,26 @@
         {
           "path": "tsconfig.json",
           "type": "file"
+        },
+        {
+          "path": "SUPPORT.md",
+          "type": "file"
+        },
+        {
+          "path": "README.md",
+          "type": "file"
+        },
+        {
+          "path": "LICENSE",
+          "type": "file"
+        },
+        {
+          "path": "CHANGELOG.md",
+          "type": "file"
+        },
+        {
+          "path": ".vscodeignore",
+          "type": "file"
         }
       ],
       "excludeItems": [
