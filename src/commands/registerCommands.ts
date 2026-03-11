@@ -364,23 +364,25 @@ function formatImportSummary(summary: ContextBridgeImportSummary): string {
 	const parts: string[] = [];
 
 	if (summary.modified > 0) {
-		parts.push(`изменено ${summary.modified}`);
+		parts.push(`modified ${summary.modified}`);
 	}
 
 	if (summary.added > 0) {
-		parts.push(`добавлено ${summary.added}`);
+		parts.push(`added ${summary.added}`);
 	}
 
 	if (summary.deleted > 0) {
-		parts.push(`удалено ${summary.deleted}`);
+		parts.push(`deleted ${summary.deleted}`);
 	}
 
 	if (summary.moved > 0) {
-		parts.push(`перемещено ${summary.moved}`);
+		parts.push(`moved ${summary.moved}`);
 	}
 
-	return parts.length > 0 ? parts.join(', ') : 'изменений нет';
+	return parts.length > 0 ? parts.join(', ') : 'no changes';
 }
+
+
 
 async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
 	const folders = vscode.workspace.workspaceFolders;

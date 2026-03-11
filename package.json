@@ -1,16 +1,49 @@
 {
   "name": "context-bridge",
   "displayName": "Context Bridge",
-  "description": "Build context sets from project files for LLM prompts and apply responses back to the project.",
-  "version": "0.0.1",
+  "description": "Build workspace context selections for LLM prompts and apply structured patch responses back to the project.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "preview": true,
   "engines": {
     "vscode": "^1.109.0"
   },
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "keywords": [
+    "llm",
+    "prompt",
+    "context",
+    "patch",
+    "workspace",
+    "developer-tools"
+  ],
+  "galleryBanner": {
+    "color": "#0F172A",
+    "theme": "dark"
+  },
+  "markdown": "github",
+  "activationEvents": [
+    "onView:contextBridgeExplorer",
+    "onCommand:context-bridge.initializeWorkspaceFiles",
+    "onCommand:context-bridge.exportSelection",
+    "onCommand:context-bridge.importSelection",
+    "onCommand:context-bridge.activateSelection",
+    "onCommand:context-bridge.deactivateSelection",
+    "onCommand:context-bridge.addToSelection",
+    "onCommand:context-bridge.removeFromSelection"
+  ],
   "main": "./dist/extension.js",
+  "files": [
+    "dist/**",
+    "media/**",
+    "package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "SUPPORT.md"
+  ],
   "contributes": {
     "views": {
       "explorer": [
@@ -40,12 +73,12 @@
       },
       {
         "command": "context-bridge.exportSelection",
-        "title": "Export",
+        "title": "Context Bridge: Export Selection",
         "category": "Context Bridge"
       },
       {
         "command": "context-bridge.importSelection",
-        "title": "Import",
+        "title": "Context Bridge: Import Patch",
         "category": "Context Bridge"
       },
       {
@@ -121,3 +154,4 @@
     "@vscode/test-electron": "^2.5.2"
   }
 }
+
