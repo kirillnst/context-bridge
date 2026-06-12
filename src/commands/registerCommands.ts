@@ -3,6 +3,7 @@ import {
 	ContextBridgeImportError,
 	type ContextBridgeImportSummary,
 	type ResourceMembershipInfo,
+	type SelectionManagementResult,
 	type SelectionMutationResult,
 	buildExportDocument,
 	collectExportFiles,
@@ -35,6 +36,7 @@ export function registerCommands(
 ): vscode.Disposable[] {
 	return [
 		registerInitializeWorkspaceFilesCommand(explorerProvider),
+		registerCreateSelectionCommand(explorerProvider, selectionEngine),
 		registerExportCommand(bridgeDocumentProvider),
 		registerImportCommand(explorerProvider, bridgeDocumentProvider),
 		registerSetSelectionActiveStateCommand(
@@ -49,6 +51,8 @@ export function registerCommands(
 			explorerProvider,
 			selectionEngine
 		),
+		registerRenameSelectionCommand(explorerProvider, selectionEngine),
+		registerDeleteSelectionCommand(explorerProvider, selectionEngine),
 		registerAddToSelectionCommand(explorerProvider, selectionEngine),
 		registerRemoveFromSelectionCommand(explorerProvider, selectionEngine),
 	];
@@ -158,6 +162,118 @@ function registerImportCommand(
 	);
 }
 
+function registerCreateSelectionCommand(
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable {
+	return vscode.commands.registerCommand(
+		COMMANDS.createSelection,
+		async (target?: vscode.WorkspaceFolder | ContextBridgeNode) => {
+			const folder = getFolderFromCommandTarget(target) ?? (await getTargetWorkspaceFolder());
+			if (!folder) {
+				return;
+			}
+
+			const selectionName = await vscode.window.showInputBox({
+				title: 'Create Context Bridge Selection',
+				prompt: 'Enter selection name.',
+				placeHolder: 'Selection name',
+				validateInput: (value) =>
+					value.trim().length === 0 ? 'Selection name is required.' : undefined,
+			});
+
+			if (selectionName === undefined) {
+				return;
+			}
+
+			const result = await selectionEngine.createSelection(folder, selectionName);
+
+			if (result.status === 'created') {
+				explorerProvider.refresh();
+				void vscode.window.showInformationMessage(
+					`Context Bridge: selection "${result.selectionName}" created.`
+				);
+				return;
+			}
+
+			handleSelectionManagementFailure(result);
+		}
+	);
+}
+
+function registerRenameSelectionCommand(
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable {
+	return vscode.commands.registerCommand(COMMANDS.renameSelection, async (node?: ContextBridgeNode) => {
+		if (!node || node.kind !== 'selection') {
+			return;
+		}
+
+		const selectionName = await vscode.window.showInputBox({
+			title: 'Rename Context Bridge Selection',
+			prompt: 'Enter new selection name.',
+			value: node.selection.name,
+			validateInput: (value) =>
+				value.trim().length === 0 ? 'Selection name is required.' : undefined,
+		});
+
+		if (selectionName === undefined) {
+			return;
+		}
+
+		const result = await selectionEngine.renameSelection(
+			node.folder,
+			node.selectionIndex,
+			selectionName
+		);
+
+		if (result.status === 'renamed') {
+			explorerProvider.refresh();
+			void vscode.window.showInformationMessage(
+				`Context Bridge: selection renamed to "${result.selectionName}".`
+			);
+			return;
+		}
+
+		handleSelectionManagementFailure(result);
+	});
+}
+
+function registerDeleteSelectionCommand(
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable {
+	return vscode.commands.registerCommand(COMMANDS.deleteSelection, async (node?: ContextBridgeNode) => {
+		if (!node || node.kind !== 'selection') {
+			return;
+		}
+
+		const deleteAction = 'Delete';
+		const selectedAction = await vscode.window.showWarningMessage(
+			`Delete selection "${node.selection.name}"? This only changes ${CONFIG_FILE_PATH}; project files will not be deleted.`,
+			{ modal: true },
+			deleteAction
+		);
+
+		if (selectedAction !== deleteAction) {
+			return;
+		}
+
+		const result = await selectionEngine.deleteSelection(node.folder, node.selectionIndex);
+
+		if (result.status === 'deleted') {
+			explorerProvider.refresh();
+			void vscode.window.showInformationMessage(
+				`Context Bridge: selection "${result.selectionName}" deleted.`
+			);
+			return;
+		}
+
+		handleSelectionManagementFailure(result);
+	});
+}
+
 function registerSetSelectionActiveStateCommand(
 	command: typeof COMMANDS.activateSelection | typeof COMMANDS.deactivateSelection,
 	active: boolean,
@@ -171,7 +287,7 @@ function registerSetSelectionActiveStateCommand(
 
 		const ok = await selectionEngine.setSelectionActiveState(
 			node.folder,
-			node.selection.name,
+			node.selectionIndex,
 			active
 		);
 		if (!ok) {
@@ -205,7 +321,7 @@ function registerAddToSelectionCommand(
 		const summaries = await selectionEngine.getSelectionSummaries(folder);
 		if (summaries.length === 0) {
 			void vscode.window.showErrorMessage(
-				'Context Bridge: .vscode/context-bridge.json was not found or does not contain valid selections.'
+				'Context Bridge: create a selection before adding resources.'
 			);
 			return;
 		}
@@ -287,6 +403,33 @@ function registerRemoveFromSelectionCommand(
 			handleSelectionMutationFailure(result, picked.index, fallbackSelectionName);
 		}
 	);
+}
+
+function handleSelectionManagementFailure(result: SelectionManagementResult): void {
+	switch (result.status) {
+		case 'duplicateName':
+			void vscode.window.showErrorMessage(
+				`Context Bridge: selection "${result.selectionName ?? 'selection'}" already exists.`
+			);
+			return;
+
+		case 'selectionNotFound':
+			void vscode.window.showErrorMessage('Context Bridge: selection not found.');
+			return;
+
+		case 'invalidName':
+			void vscode.window.showErrorMessage('Context Bridge: selection name is required.');
+			return;
+
+		case 'configMissing':
+			void vscode.window.showErrorMessage(
+				'Context Bridge: initialize .vscode/context-bridge.json first.'
+			);
+			return;
+
+		default:
+			void vscode.window.showErrorMessage('Context Bridge: operation failed.');
+	}
 }
 
 function handleSelectionMutationFailure(
@@ -384,7 +527,23 @@ function formatImportSummary(summary: ContextBridgeImportSummary): string {
 
 
 
+function getFolderFromCommandTarget(
+	target: vscode.WorkspaceFolder | ContextBridgeNode | undefined
+): vscode.WorkspaceFolder | undefined {
+	if (!target) {
+		return undefined;
+	}
+
+	if ('kind' in target) {
+		return target.folder;
+	}
+
+	return target;
+}
+
 async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
+
+
 	const folders = vscode.workspace.workspaceFolders;
 
 	if (!folders || folders.length === 0) {

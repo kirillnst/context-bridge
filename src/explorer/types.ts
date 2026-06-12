@@ -19,8 +19,11 @@ export interface SelectionNode {
 	kind: 'selection';
 	folder: vscode.WorkspaceFolder;
 	selection: ContextBridgeSelection;
+	selectionIndex: number;
 	fileCount: number;
 }
+
+
 
 export interface SelectionItemNode {
 	kind: 'selectionItem';

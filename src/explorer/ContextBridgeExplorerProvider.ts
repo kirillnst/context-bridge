@@ -180,6 +180,7 @@ export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<Co
 			kind: 'selection',
 			folder,
 			selection: summary.selection,
+			selectionIndex: summary.selectionIndex,
 			fileCount: summary.fileCount,
 		}));
 
@@ -192,6 +193,11 @@ export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<Co
 				kind: 'action',
 				folder,
 				command: COMMANDS.initializeWorkspaceFiles,
+			},
+			{
+				kind: 'action',
+				folder,
+				command: COMMANDS.createSelection,
 			},
 			{
 				kind: 'action',
@@ -211,6 +217,8 @@ function getActionLabel(command: ActionCommand): string {
 	switch (command) {
 		case COMMANDS.initializeWorkspaceFiles:
 			return 'Initialize';
+		case COMMANDS.createSelection:
+			return 'Create Selection';
 		case COMMANDS.exportSelection:
 			return 'Export';
 		case COMMANDS.importSelection:
@@ -222,11 +230,15 @@ function getActionIcon(command: ActionCommand): string {
 	switch (command) {
 		case COMMANDS.initializeWorkspaceFiles:
 			return 'add';
+		case COMMANDS.createSelection:
+			return 'list-selection';
 		case COMMANDS.exportSelection:
 			return 'arrow-up';
 		case COMMANDS.importSelection:
 			return 'arrow-down';
 	}
+
+
 }
 
 function formatFileCount(fileCount: number): string {

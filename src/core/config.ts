@@ -43,22 +43,7 @@ export async function writeContextBridgeConfig(
 export function createDefaultConfig(): ContextBridgeConfig {
 	return {
 		version: 2,
-		selections: [
-			{
-				name: 'Primary',
-				short: 'PR',
-				active: true,
-				items: [],
-				excludeItems: [],
-			},
-			{
-				name: 'Additional',
-				short: 'AD',
-				active: true,
-				items: [],
-				excludeItems: [],
-			},
-		],
+		selections: [],
 	};
 }
 
@@ -71,14 +56,12 @@ function normalizeConfig(value: unknown): ContextBridgeConfig | undefined {
 		.map((selection, index) => normalizeSelection(selection, index))
 		.filter((selection): selection is ContextBridgeSelection => selection !== undefined);
 
-	if (selections.length === 0) {
-		return undefined;
-	}
-
 	return {
 		version: typeof value.version === 'number' ? value.version : 2,
 		selections,
 	};
+
+
 }
 
 function normalizeSelection(value: unknown, index: number): ContextBridgeSelection | undefined {

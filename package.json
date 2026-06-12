@@ -29,10 +29,13 @@
   "activationEvents": [
     "onView:contextBridgeExplorer",
     "onCommand:context-bridge.initializeWorkspaceFiles",
+    "onCommand:context-bridge.createSelection",
     "onCommand:context-bridge.exportSelection",
     "onCommand:context-bridge.importSelection",
     "onCommand:context-bridge.activateSelection",
     "onCommand:context-bridge.deactivateSelection",
+    "onCommand:context-bridge.renameSelection",
+    "onCommand:context-bridge.deleteSelection",
     "onCommand:context-bridge.addToSelection",
     "onCommand:context-bridge.removeFromSelection"
   ],
@@ -73,6 +76,11 @@
         "category": "Context Bridge"
       },
       {
+        "command": "context-bridge.createSelection",
+        "title": "Context Bridge: Create Selection",
+        "category": "Context Bridge"
+      },
+      {
         "command": "context-bridge.exportSelection",
         "title": "Context Bridge: Export Selection",
         "category": "Context Bridge"
@@ -90,6 +98,16 @@
       {
         "command": "context-bridge.deactivateSelection",
         "title": "Deactivate Selection",
+        "category": "Context Bridge"
+      },
+      {
+        "command": "context-bridge.renameSelection",
+        "title": "Rename Selection…",
+        "category": "Context Bridge"
+      },
+      {
+        "command": "context-bridge.deleteSelection",
+        "title": "Delete Selection",
         "category": "Context Bridge"
       },
       {
@@ -118,14 +136,43 @@
       ],
       "view/item/context": [
         {
+          "command": "context-bridge.createSelection",
+          "when": "view == contextBridgeExplorer && viewItem == contextBridge.workspaceFolder",
+          "group": "1_selection@1"
+        },
+        {
           "command": "context-bridge.activateSelection",
-          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.inactive"
+          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.inactive",
+          "group": "2_state@1"
         },
         {
           "command": "context-bridge.deactivateSelection",
-          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.active"
+          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.active",
+          "group": "2_state@1"
+        },
+        {
+          "command": "context-bridge.renameSelection",
+          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.active",
+          "group": "3_manage@1"
+        },
+        {
+          "command": "context-bridge.renameSelection",
+          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.inactive",
+          "group": "3_manage@1"
+        },
+        {
+          "command": "context-bridge.deleteSelection",
+          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.active",
+          "group": "3_manage@2"
+        },
+        {
+          "command": "context-bridge.deleteSelection",
+          "when": "view == contextBridgeExplorer && viewItem == contextBridge.selection.inactive",
+          "group": "3_manage@2"
         }
       ]
+
+
     }
   },
   "scripts": {

@@ -9,6 +9,7 @@ import {
 	type ContextBridgeItem,
 	type ContextBridgeSelection,
 	type ResourceMembershipInfo,
+	type SelectionManagementResult,
 	type SelectionMutationResult,
 	type SelectionSummary,
 } from './core/types';
@@ -26,6 +27,8 @@ export {
 	type ContextBridgeSelection,
 	type ResourceMembershipInfo,
 	type ResourceMembershipKind,
+	type SelectionManagementResult,
+	type SelectionManagementStatus,
 	type SelectionMutationResult,
 	type SelectionMutationStatus,
 	type SelectionSummary,
@@ -76,7 +79,7 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 
 		const summaries: SelectionSummary[] = [];
 
-		for (const selection of config.selections) {
+		for (const [selectionIndex, selection] of config.selections.entries()) {
 			const existingItems = await filterExistingItems(folder, selection.items);
 			const existingExcludeItems = await filterExistingItems(folder, selection.excludeItems);
 			const fileCount = await countSelectionFiles(folder, existingItems, existingExcludeItems);
@@ -87,6 +90,7 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 					items: existingItems,
 					excludeItems: existingExcludeItems,
 				},
+				selectionIndex,
 				fileCount,
 			});
 		}
@@ -96,7 +100,7 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 
 	public async setSelectionActiveState(
 		folder: vscode.WorkspaceFolder,
-		selectionName: string,
+		selectionIndex: number,
 		active: boolean
 	): Promise<boolean> {
 		const config = await this.readConfig(folder);
@@ -104,26 +108,119 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 			return false;
 		}
 
-		let changed = false;
-		const nextSelections = config.selections.map((selection) => {
-			if (selection.name !== selectionName) {
-				return selection;
-			}
+		const selection = config.selections[selectionIndex];
+		if (!selection) {
+			return false;
+		}
 
-			if (selection.active === active) {
-				return selection;
-			}
-
-			changed = true;
-			return { ...selection, active };
-		});
-
-		if (!changed) {
+		if (selection.active === active) {
 			return true;
 		}
 
+		const nextSelections = config.selections.map((current, index) =>
+			index === selectionIndex ? { ...current, active } : current
+		);
+
 		await this.persistSelections(folder, config, nextSelections);
 		return true;
+	}
+
+	public async createSelection(
+		folder: vscode.WorkspaceFolder,
+		rawName: string
+	): Promise<SelectionManagementResult> {
+		const config = await this.readConfig(folder);
+		if (!config) {
+			return { status: 'configMissing' };
+		}
+
+		const name = normalizeSelectionName(rawName);
+		if (name.length === 0) {
+			return { status: 'invalidName' };
+		}
+
+		if (hasSelectionName(config.selections, name)) {
+			return { status: 'duplicateName', selectionName: name };
+		}
+
+		await this.persistSelections(folder, config, [
+			...config.selections,
+			{
+				name,
+				short: createSelectionShort(name),
+				active: true,
+				items: [],
+				excludeItems: [],
+			},
+		]);
+
+		return { status: 'created', selectionName: name };
+	}
+
+	public async renameSelection(
+		folder: vscode.WorkspaceFolder,
+		selectionIndex: number,
+		rawName: string
+	): Promise<SelectionManagementResult> {
+		const config = await this.readConfig(folder);
+		if (!config) {
+			return { status: 'configMissing' };
+		}
+
+		const selection = config.selections[selectionIndex];
+		if (!selection) {
+			return { status: 'selectionNotFound' };
+		}
+
+		const name = normalizeSelectionName(rawName);
+		if (name.length === 0) {
+			return { status: 'invalidName' };
+		}
+
+		if (hasSelectionName(config.selections, name, selectionIndex)) {
+			return { status: 'duplicateName', selectionName: name };
+		}
+
+		if (selection.name === name) {
+			return { status: 'renamed', selectionName: name };
+		}
+
+		const nextSelections = config.selections.map((current, index) =>
+			index === selectionIndex
+				? {
+					...current,
+					name,
+					short: createSelectionShort(name),
+				}
+				: current
+		);
+
+		await this.persistSelections(folder, config, nextSelections);
+
+		return { status: 'renamed', selectionName: name };
+	}
+
+	public async deleteSelection(
+		folder: vscode.WorkspaceFolder,
+		selectionIndex: number
+	): Promise<SelectionManagementResult> {
+		const config = await this.readConfig(folder);
+		if (!config) {
+			return { status: 'configMissing' };
+		}
+
+		const selection = config.selections[selectionIndex];
+		if (!selection) {
+			return { status: 'selectionNotFound' };
+		}
+
+		await this.persistSelections(
+			folder,
+			config,
+			config.selections.filter((_current, index) => index !== selectionIndex)
+		);
+
+		return { status: 'deleted', selectionName: selection.name };
 	}
 
 	public async addResourceToSelection(
@@ -342,4 +439,46 @@ async function toContextBridgeItem(
 
 	return undefined;
 }
+
+function normalizeSelectionName(value: string): string {
+	return value.trim();
+}
+
+function hasSelectionName(
+	selections: ContextBridgeSelection[],
+	name: string,
+	exceptIndex?: number
+): boolean {
+	const normalizedName = name.toLocaleLowerCase();
+
+	return selections.some(
+		(selection, index) =>
+			index !== exceptIndex && selection.name.trim().toLocaleLowerCase() === normalizedName
+	);
+}
+
+function createSelectionShort(selectionName: string): string {
+	const trimmed = selectionName.trim();
+	if (trimmed.length === 0) {
+		return '?';
+	}
+
+	const parts = trimmed.split(/\s+/).filter((part) => part.length > 0);
+	if (parts.length === 0) {
+		return '?';
+	}
+
+	if (parts.length === 1) {
+		return toShortLabel(parts[0]);
+	}
+
+	return toShortLabel(parts.map((part) => Array.from(part)[0] ?? '').join(''));
+}
+
+function toShortLabel(value: string): string {
+	const trimmed = Array.from(value.trim()).slice(0, 2).join('');
+	return trimmed.length > 0 ? trimmed.toUpperCase() : '?';
+}
+
+
 

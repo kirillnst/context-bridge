@@ -24,6 +24,7 @@ export interface ContextBridgeConfig {
 
 export interface SelectionSummary {
 	selection: ContextBridgeSelection;
+	selectionIndex: number;
 	fileCount: number;
 }
 
@@ -55,6 +56,22 @@ export interface SelectionMutationResult {
 	status: SelectionMutationStatus;
 	selectionName?: string;
 }
+
+export type SelectionManagementStatus =
+	| 'created'
+	| 'renamed'
+	| 'deleted'
+	| 'duplicateName'
+	| 'selectionNotFound'
+	| 'invalidName'
+	| 'configMissing';
+
+export interface SelectionManagementResult {
+	status: SelectionManagementStatus;
+	selectionName?: string;
+}
+
+
 
 export type ResourceMembershipKind =
 	| 'direct'

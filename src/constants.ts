@@ -2,10 +2,13 @@ import * as vscode from 'vscode';
 
 export const COMMANDS = {
 	initializeWorkspaceFiles: 'context-bridge.initializeWorkspaceFiles',
+	createSelection: 'context-bridge.createSelection',
 	exportSelection: 'context-bridge.exportSelection',
 	importSelection: 'context-bridge.importSelection',
 	activateSelection: 'context-bridge.activateSelection',
 	deactivateSelection: 'context-bridge.deactivateSelection',
+	renameSelection: 'context-bridge.renameSelection',
+	deleteSelection: 'context-bridge.deleteSelection',
 	addToSelection: 'context-bridge.addToSelection',
 	removeFromSelection: 'context-bridge.removeFromSelection',
 } as const;
@@ -18,6 +21,9 @@ export const BRIDGE_DOCUMENT_URI = vscode.Uri.from({
 
 export type ActionCommand =
 	| typeof COMMANDS.initializeWorkspaceFiles
+	| typeof COMMANDS.createSelection
 	| typeof COMMANDS.exportSelection
 	| typeof COMMANDS.importSelection;
+
+
 

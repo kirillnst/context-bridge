@@ -2,8 +2,8 @@
   "version": 2,
   "selections": [
     {
-      "name": "Primary",
-      "short": "PR",
+      "name": "src",
+      "short": "SR",
       "active": true,
       "items": [
         {
@@ -11,11 +11,7 @@
           "type": "folder"
         },
         {
-          "path": "package.json",
-          "type": "file"
-        },
-        {
-          "path": "src/media/context-bridge.svg",
+          "path": ".gitignore",
           "type": "file"
         },
         {
@@ -27,11 +23,11 @@
           "type": "file"
         },
         {
-          "path": "tsconfig.json",
+          "path": "LICENSE",
           "type": "file"
         },
         {
-          "path": "SUPPORT.md",
+          "path": "package.json",
           "type": "file"
         },
         {
@@ -39,30 +35,10 @@
           "type": "file"
         },
         {
-          "path": "LICENSE",
-          "type": "file"
-        },
-        {
-          "path": "CHANGELOG.md",
-          "type": "file"
-        },
-        {
-          "path": ".vscodeignore",
+          "path": "tsconfig.json",
           "type": "file"
         }
       ],
-      "excludeItems": [
-        {
-          "path": "src/test",
-          "type": "folder"
-        }
-      ]
-    },
-    {
-      "name": "Additional",
-      "short": "AD",
-      "active": true,
-      "items": [],
       "excludeItems": []
     }
   ]
