@@ -86,7 +86,8 @@ function registerExportCommand(
 				return;
 			}
 
-			if (!(await readContextBridgeConfig(folder))) {
+			const config = await readContextBridgeConfig(folder);
+			if (!config) {
 				void vscode.window.showErrorMessage(
 					'Context Bridge: valid .vscode/context-bridge.json was not found.'
 				);
@@ -94,7 +95,7 @@ function registerExportCommand(
 			}
 
 			const exportFiles = await collectExportFiles(folder);
-			const exportContent = buildExportDocument(exportFiles);
+			const exportContent = buildExportDocument(exportFiles, config.prompt);
 
 			await bridgeDocumentProvider.replaceContent(exportContent);
 			await openBridgeDocument();

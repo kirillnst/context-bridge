@@ -98,11 +98,21 @@ export async function collectExportFiles(
 	return files;
 }
 
-export function buildExportDocument(files: ContextBridgeExportFile[]): string {
-	return files
-		.map((file) => `FILE: ${file.path}\n\nCONTENT:\n${normalizeExportText(file.content)}`)
+export function buildExportDocument(
+	files: ContextBridgeExportFile[],
+	prompt?: string
+): string {
+	const promptSection = normalizeExportText(prompt ?? '').trim();
+	const fileSections = files.map(
+		(file) => `FILE: ${file.path}\n\nCONTENT:\n${normalizeExportText(file.content)}`
+	);
+
+	return [promptSection, ...fileSections]
+		.filter((section) => section.length > 0)
 		.join('\n\n');
 }
+
+
 
 function normalizeExportText(value: string): string {
 	return value.replace(/\r\n/g, '\n');

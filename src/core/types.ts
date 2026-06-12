@@ -19,8 +19,11 @@ export interface ContextBridgeSelection {
 
 export interface ContextBridgeConfig {
 	version: number;
+	prompt: string;
 	selections: ContextBridgeSelection[];
 }
+
+
 
 export interface SelectionSummary {
 	selection: ContextBridgeSelection;
