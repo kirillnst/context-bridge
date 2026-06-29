@@ -46,16 +46,14 @@ After initialization, Context Bridge starts with an empty selection list:
 
 ## Patch format
 
-Context Bridge imports a strict patch format:
+Context Bridge imports a command-based patch format. Command words are wrapped as `c<COMMAND>b`, and blank separator lines are optional:
 
 ```text
-FILE: src/example.ts
-ACTION: modify
-
-SEARCH:
+cFILEb src/example.ts
+cACTIONb modify
+cSEARCHb
 old text
-
-REPLACE:
+cREPLACEb
 new text
 ```
 
@@ -65,6 +63,8 @@ Supported actions:
 - `add`
 - `delete`
 - `move`
+
+Use `cTOb <new/path>` for move destinations. Each command must start at the beginning of its own line.
 
 A no-op response can be:
 

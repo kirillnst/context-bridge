@@ -1,5 +1,4 @@
-import * as path from 'path';
-import * as vscode from 'vscode';
+import * as path from 'path';import * as vscode from 'vscode';
 import type { ContextBridgeImportSummary } from './types';
 import {
 	fileExists,
@@ -22,6 +21,22 @@ interface ParsedContextBridgePatchFile {
 	content?: string;
 	to?: string;
 }
+
+interface ContextBridgePatchSyntax {
+	file: string;
+	action: string;
+	search: string;
+	replace: string;
+	to: string;
+}
+
+const PATCH_SYNTAX: ContextBridgePatchSyntax = {
+	file: 'cFILEb',
+	action: 'cACTIONb',
+	search: 'cSEARCHb',
+	replace: 'cREPLACEb',
+	to: 'cTOb',
+};
 
 export class ContextBridgeImportError extends Error {
 	constructor(
@@ -85,7 +100,7 @@ function extractPatchContent(value: string): string {
 		return 'NO_CHANGES';
 	}
 
-	const firstFileMatch = normalized.match(/^FILE:\s+/m);
+	const firstFileMatch = findFileMatches(normalized, PATCH_SYNTAX)[0];
 	if (typeof firstFileMatch?.index === 'number') {
 		return normalized.slice(firstFileMatch.index);
 	}
@@ -94,47 +109,59 @@ function extractPatchContent(value: string): string {
 }
 
 function parseContextBridgePatch(value: string): ParsedContextBridgePatchFile[] {
-	const matches = [...value.matchAll(/^FILE:\s+(.+)$/gm)];
+	const matches = findFileMatches(value, PATCH_SYNTAX);
 	if (matches.length === 0) {
-		throw new Error('no FILE blocks were found.');
+		throw new Error(`no ${PATCH_SYNTAX.file} blocks were found.`);
 	}
 
 	return matches.map((match, index) => {
 		const filePath = (match[1] ?? '').trim();
 		if (filePath.length === 0) {
-			throw new Error(`empty path in FILE block #${index + 1}.`);
+			throw new Error(`empty path in ${PATCH_SYNTAX.file} block #${index + 1}.`);
 		}
 
 		const blockStart = (match.index ?? 0) + match[0].length;
 		const blockEnd = matches[index + 1]?.index ?? value.length;
 		const blockBody = value.slice(blockStart, blockEnd);
 
-		return parseContextBridgePatchFile(filePath, blockBody);
+		return parseContextBridgePatchFile(
+			filePath,
+			blockBody,
+			PATCH_SYNTAX,
+			index < matches.length - 1
+		);
 	});
 }
 
 function parseContextBridgePatchFile(
 	filePath: string,
-	blockBody: string
+	blockBody: string,
+	syntax: ContextBridgePatchSyntax,
+	hasFollowingFile: boolean
 ): ParsedContextBridgePatchFile {
-	let cursor = blockBody.startsWith('\n') ? 1 : 0;
+	let cursor = consumeBlankLines(blockBody, 0);
 	const actionLine = readPatchLine(blockBody, cursor);
-	const actionPrefix = 'ACTION: ';
+	const actionValue = readCommandValue(actionLine.line, syntax.action);
 
-	if (!actionLine.line.startsWith(actionPrefix)) {
-		throw new Error(`ACTION was not found for "${filePath}".`);
+	if (actionValue === undefined) {
+		throw new Error(`${syntax.action} was not found for "${filePath}".`);
 	}
 
-	const action = actionLine.line.slice(actionPrefix.length).trim() as ContextBridgePatchAction;
+	const action = actionValue as ContextBridgePatchAction;
 	cursor = actionLine.next;
 
 	switch (action) {
 		case 'modify': {
-			cursor = consumeSectionSeparator(blockBody, cursor);
-			const operations = parseModifyOperations(blockBody.slice(cursor));
+			const operations = parseModifyOperations(
+				blockBody.slice(cursor),
+				syntax,
+				hasFollowingFile
+			);
 
 			if (operations.length === 0) {
-				throw new Error(`no SEARCH/REPLACE blocks were found for "${filePath}".`);
+				throw new Error(
+					`no ${syntax.search}/${syntax.replace} blocks were found for "${filePath}".`
+				);
 			}
 
 			return {
@@ -144,16 +171,22 @@ function parseContextBridgePatchFile(
 			};
 		}
 
-		case 'add':
+		case 'add': {
+			const contentStart = consumeOptionalBlankLine(blockBody, cursor);
+			const content = blockBody.slice(contentStart);
+
 			return {
 				path: filePath,
 				action,
-				content: blockBody.slice(consumeSectionSeparator(blockBody, cursor)),
+				content: hasFollowingFile ? trimCommandGap(content) : content,
 			};
+		}
 
 		case 'delete': {
 			if (blockBody.slice(cursor).trim().length > 0) {
-				throw new Error(`ACTION: delete for "${filePath}" must not contain any extra text.`);
+				throw new Error(
+					`${syntax.action} delete for "${filePath}" must not contain any extra text.`
+				);
 			}
 
 			return {
@@ -163,20 +196,22 @@ function parseContextBridgePatchFile(
 		}
 
 		case 'move': {
-			cursor = consumeSectionSeparator(blockBody, cursor);
+			cursor = consumeBlankLines(blockBody, cursor);
 			const toLine = readPatchLine(blockBody, cursor);
+			const to = readCommandValue(toLine.line, syntax.to);
 
-			if (!toLine.line.startsWith('TO: ')) {
-				throw new Error(`TO was not found for "${filePath}".`);
+			if (to === undefined) {
+				throw new Error(`${syntax.to} was not found for "${filePath}".`);
 			}
 
 			if (blockBody.slice(toLine.next).trim().length > 0) {
-				throw new Error(`ACTION: move for "${filePath}" contains extra text after TO.`);
+				throw new Error(
+					`${syntax.action} move for "${filePath}" contains extra text after ${syntax.to}.`
+				);
 			}
 
-			const to = toLine.line.slice('TO: '.length).trim();
 			if (to.length === 0) {
-				throw new Error(`TO destination path is empty for "${filePath}".`);
+				throw new Error(`${syntax.to} destination path is empty for "${filePath}".`);
 			}
 
 			return {
@@ -187,53 +222,95 @@ function parseContextBridgePatchFile(
 		}
 
 		default:
-			throw new Error(
-				`unsupported ACTION for "${filePath}": ${actionLine.line.slice(actionPrefix.length).trim()}.`
-			);
+			throw new Error(`unsupported ${syntax.action} for "${filePath}": ${actionValue}.`);
 	}
 }
 
-function parseModifyOperations(value: string): ContextBridgePatchSearchReplace[] {
-	if (value.length === 0) {
-		return [];
-	}
-
+function parseModifyOperations(
+	value: string,
+	syntax: ContextBridgePatchSyntax,
+	trimTrailingFileGap: boolean
+): ContextBridgePatchSearchReplace[] {
 	const operations: ContextBridgePatchSearchReplace[] = [];
-	let remaining = value;
+	let cursor = consumeBlankLines(value, 0);
 
-	while (remaining.length > 0) {
-		if (!remaining.startsWith('SEARCH:\n')) {
-			throw new Error('expected a SEARCH block.');
+	while (cursor < value.length) {
+		const searchLine = readPatchLine(value, cursor);
+		if (searchLine.line.trimEnd() !== syntax.search) {
+			throw new Error(`expected a ${syntax.search} block.`);
 		}
 
-		remaining = remaining.slice('SEARCH:\n'.length);
-
-		const replaceMarker = remaining.indexOf('\n\nREPLACE:\n');
-		if (replaceMarker < 0) {
-			throw new Error('REPLACE block was not found for SEARCH.');
+		const searchStart = consumeOptionalBlankLine(value, searchLine.next);
+		const replaceCommand = findCommandLine(value, syntax.replace, searchStart);
+		if (!replaceCommand) {
+			throw new Error(`${syntax.replace} block was not found for ${syntax.search}.`);
 		}
 
-		const search = remaining.slice(0, replaceMarker);
-		remaining = remaining.slice(replaceMarker + '\n\nREPLACE:\n'.length);
+		const search = trimCommandGap(value.slice(searchStart, replaceCommand.index));
+		const replaceStart = consumeOptionalBlankLine(value, replaceCommand.next);
+		const nextSearchCommand = findCommandLine(value, syntax.search, replaceStart);
 
-		const nextSearchMarker = remaining.indexOf('\n\nSEARCH:\n');
-		if (nextSearchMarker < 0) {
+		if (!nextSearchCommand) {
+			const replace = value.slice(replaceStart);
 			operations.push({
 				search,
-				replace: remaining,
+				replace: trimTrailingFileGap ? trimCommandGap(replace) : replace,
 			});
 			break;
 		}
 
 		operations.push({
 			search,
-			replace: remaining.slice(0, nextSearchMarker),
+			replace: trimCommandGap(value.slice(replaceStart, nextSearchCommand.index)),
 		});
-
-		remaining = remaining.slice(nextSearchMarker + 2);
+		cursor = nextSearchCommand.index;
 	}
 
 	return operations;
+}
+
+
+
+function findFileMatches(value: string, syntax: ContextBridgePatchSyntax): RegExpMatchArray[] {
+	const pattern = new RegExp(`^${escapeRegExp(syntax.file)}[ \\t]+(.+)$`, 'gm');
+	return [...value.matchAll(pattern)];
+}
+
+function findCommandLine(
+	value: string,
+	command: string,
+	startIndex: number
+): { index: number; next: number } | undefined {
+	const pattern = new RegExp(`^${escapeRegExp(command)}[ \\t]*$`, 'gm');
+	pattern.lastIndex = startIndex;
+	const match = pattern.exec(value);
+
+	if (!match || typeof match.index !== 'number') {
+		return undefined;
+	}
+
+	const lineEnd = match.index + match[0].length;
+	return {
+		index: match.index,
+		next: value[lineEnd] === '\n' ? lineEnd + 1 : lineEnd,
+	};
+}
+
+function readCommandValue(line: string, command: string): string | undefined {
+	if (!line.startsWith(command)) {
+		return undefined;
+	}
+
+	const rest = line.slice(command.length);
+	if (!/^[ \t]+/.test(rest)) {
+		return undefined;
+	}
+
+	return rest.trim();
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function applyPatchModifyOperations(
@@ -249,17 +326,17 @@ function applyPatchModifyOperations(
 		}
 
 		if (operation.search.length === 0) {
-			throw new Error(`SEARCH #${index + 1} is empty.`);
+			throw new Error(`Search block #${index + 1} is empty.`);
 		}
 
 		const matches = countExactMatches(nextValue, operation.search);
 		if (matches === 0) {
-			throw new Error(`SEARCH #${index + 1} was not found exactly.`);
+			throw new Error(`Search block #${index + 1} was not found exactly.`);
 		}
 
 		if (matches > 1) {
 			throw new Error(
-				`SEARCH #${index + 1} was found ${matches} time(s); replacement is ambiguous.`
+				`Search block #${index + 1} was found ${matches} time(s); replacement is ambiguous.`
 			);
 		}
 
@@ -436,8 +513,40 @@ function readPatchLine(value: string, startIndex: number): { line: string; next:
 	};
 }
 
-function consumeSectionSeparator(value: string, startIndex: number): number {
-	return value[startIndex] === '\n' ? startIndex + 1 : startIndex;
+function consumeBlankLines(value: string, startIndex: number): number {
+	let cursor = startIndex;
+
+	while (cursor < value.length) {
+		const line = readPatchLine(value, cursor);
+		if (line.line.trim().length > 0) {
+			break;
+		}
+
+		cursor = line.next;
+	}
+
+	return cursor;
+}
+
+function consumeOptionalBlankLine(value: string, startIndex: number): number {
+	const line = readPatchLine(value, startIndex);
+	return line.line.trim().length === 0 ? line.next : startIndex;
+}
+
+function trimCommandGap(value: string): string {
+	let end = value.length;
+
+	if (end > 0 && value[end - 1] === '\n') {
+		end -= 1;
+	}
+
+	const withoutLineBreak = value.slice(0, end);
+	const lastLineStart = withoutLineBreak.lastIndexOf('\n') + 1;
+	if (withoutLineBreak.slice(lastLineStart).trim().length === 0) {
+		return withoutLineBreak.slice(0, Math.max(0, lastLineStart - 1));
+	}
+
+	return withoutLineBreak;
 }
 
 function ensureDocumentNotDirty(uri: vscode.Uri, relativePath: string): void {
