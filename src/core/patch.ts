@@ -6,13 +6,12 @@ import {
 	normalizeRelativePath,
 	toWorkspaceRelativeUri,
 } from './pathUtils';
+import {
+	applyPatchModifyOperations,
+	type ContextBridgePatchSearchReplace,
+} from './patchText';
 
 type ContextBridgePatchAction = 'modify' | 'add' | 'delete' | 'move';
-
-interface ContextBridgePatchSearchReplace {
-	search: string;
-	replace: string;
-}
 
 interface ParsedContextBridgePatchFile {
 	path: string;
@@ -313,39 +312,6 @@ function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function applyPatchModifyOperations(
-	value: string,
-	operations: ContextBridgePatchSearchReplace[]
-): string {
-	let nextValue = value;
-
-	for (const [index, operation] of operations.entries()) {
-		if (operation.search === '*') {
-			nextValue = operation.replace;
-			continue;
-		}
-
-		if (operation.search.length === 0) {
-			throw new Error(`Search block #${index + 1} is empty.`);
-		}
-
-		const matches = countExactMatches(nextValue, operation.search);
-		if (matches === 0) {
-			throw new Error(`Search block #${index + 1} was not found exactly.`);
-		}
-
-		if (matches > 1) {
-			throw new Error(
-				`Search block #${index + 1} was found ${matches} time(s); replacement is ambiguous.`
-			);
-		}
-
-		nextValue = replaceSingleMatch(nextValue, operation.search, operation.replace);
-	}
-
-	return nextValue;
-}
-
 async function applyContextBridgePatchFile(
 	folder: vscode.WorkspaceFolder,
 	patchFile: ParsedContextBridgePatchFile,
@@ -459,36 +425,6 @@ async function applyContextBridgePatchFile(
 	} catch (error) {
 		throw new Error(`"${sourcePath}": ${toImportErrorMessage(error)}`);
 	}
-}
-
-function countExactMatches(value: string, search: string): number {
-	if (search.length === 0) {
-		return 0;
-	}
-
-	let count = 0;
-	let cursor = 0;
-
-	while (cursor <= value.length) {
-		const matchIndex = value.indexOf(search, cursor);
-		if (matchIndex < 0) {
-			break;
-		}
-
-		count += 1;
-		cursor = matchIndex + search.length;
-	}
-
-	return count;
-}
-
-function replaceSingleMatch(value: string, search: string, replace: string): string {
-	const matchIndex = value.indexOf(search);
-	if (matchIndex < 0) {
-		return value;
-	}
-
-	return value.slice(0, matchIndex) + replace + value.slice(matchIndex + search.length);
 }
 
 function readPatchLine(value: string, startIndex: number): { line: string; next: number } {
