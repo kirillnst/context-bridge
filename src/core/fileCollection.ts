@@ -7,9 +7,10 @@ import {
 	toWorkspaceRelativeUri,
 } from './pathUtils';
 import { isExcludedFromFolderSelection } from './selectionRules';
-import type {
-	ContextBridgeExportFile,
-	ContextBridgeItem,
+import {
+	NO_EXTENSION_MARKER,
+	type ContextBridgeExportFile,
+	type ContextBridgeItem,
 } from './types';
 
 export async function filterExistingItems(
@@ -80,6 +81,12 @@ export async function collectExportFiles(
 				continue;
 			}
 
+			if (shouldIgnoreFileContent(filePath, config.ignoreContentExtensions)) {
+				files.push({ path: filePath });
+				exportedPaths.add(filePath);
+				continue;
+			}
+
 			const fileUri = toWorkspaceRelativeUri(folder.uri, filePath);
 
 			try {
@@ -103,8 +110,10 @@ export function buildExportDocument(
 	prompt?: string
 ): string {
 	const promptSection = normalizeExportText(prompt ?? '').trim();
-	const fileSections = files.map(
-		(file) => `FILE: ${file.path}\n\nCONTENT:\n${normalizeExportText(file.content)}`
+	const fileSections = files.map((file) =>
+		file.content === undefined
+			? `FILE: ${file.path}`
+			: `FILE: ${file.path}\n\nCONTENT:\n${normalizeExportText(file.content)}`
 	);
 
 	return [promptSection, ...fileSections]
@@ -112,7 +121,19 @@ export function buildExportDocument(
 		.join('\n\n');
 }
 
+function shouldIgnoreFileContent(filePath: string, ignoreContentExtensions: string[]): boolean {
+	const fileName = filePath.split('/').pop()?.toLowerCase() ?? '';
+	const lastDotIndex = fileName.lastIndexOf('.');
+	const hasExtension = lastDotIndex >= 0 && lastDotIndex < fileName.length - 1;
 
+	if (!hasExtension && ignoreContentExtensions.includes(NO_EXTENSION_MARKER)) {
+		return true;
+	}
+
+	return ignoreContentExtensions.some(
+		(extension) => extension !== NO_EXTENSION_MARKER && fileName.endsWith(extension)
+	);
+}
 
 function normalizeExportText(value: string): string {
 	return value.replace(/\r\n/g, '\n');

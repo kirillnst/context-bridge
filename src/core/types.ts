@@ -1,6 +1,7 @@
 export const CONFIG_FILE_NAME = 'context-bridge.json';
 export const CONFIG_DIRECTORY_NAME = '.vscode';
 export const CONFIG_FILE_PATH = `${CONFIG_DIRECTORY_NAME}/${CONFIG_FILE_NAME}`;
+export const NO_EXTENSION_MARKER = '<no-extension>';
 
 export type ContextBridgeItemType = 'file' | 'folder';
 
@@ -20,6 +21,7 @@ export interface ContextBridgeSelection {
 export interface ContextBridgeConfig {
 	version: number;
 	prompt: string;
+	ignoreContentExtensions: string[];
 	selections: ContextBridgeSelection[];
 }
 
@@ -33,7 +35,7 @@ export interface SelectionSummary {
 
 export interface ContextBridgeExportFile {
 	path: string;
-	content: string;
+	content?: string;
 }
 
 export interface ContextBridgeImportSummary {
