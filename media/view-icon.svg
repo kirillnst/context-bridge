@@ -1,0 +1,61 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 24 24"
+  fill="none"
+>
+  <defs>
+    <linearGradient id="panelLeft" x1="2.5" y1="12" x2="9" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1E6FFF"/>
+      <stop offset="1" stop-color="#37C8FF"/>
+    </linearGradient>
+
+    <linearGradient id="panelRight" x1="15" y1="12" x2="21.5" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#37D8FF"/>
+      <stop offset="1" stop-color="#45F3C6"/>
+    </linearGradient>
+
+    <linearGradient id="bridge" x1="9" y1="12" x2="15" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#37C8FF"/>
+      <stop offset="1" stop-color="#45F3C6"/>
+    </linearGradient>
+
+    <linearGradient id="flowTop" x1="7.5" y1="4.5" x2="16.8" y2="4.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2E8BFF"/>
+      <stop offset="1" stop-color="#45F3C6"/>
+    </linearGradient>
+
+    <linearGradient id="flowBottom" x1="7.2" y1="19.5" x2="16.5" y2="19.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2E8BFF"/>
+      <stop offset="1" stop-color="#45F3C6"/>
+    </linearGradient>
+  </defs>
+
+  <rect
+    x="2.5" y="6.5" width="6.5" height="11" rx="1.5"
+    fill="#0A1E3E" fill-opacity="0.18"
+    stroke="url(#panelLeft)" stroke-width="1.35"
+  />
+
+  <rect
+    x="15" y="6.5" width="6.5" height="11" rx="1.5"
+    fill="#0A1E3E" fill-opacity="0.18"
+    stroke="url(#panelRight)" stroke-width="1.35"
+  />
+
+  <path d="M4.3 9h2.9" stroke="url(#panelLeft)" stroke-width="1.2" stroke-linecap="round"/>
+  <path d="M4.3 12h2.1" stroke="url(#panelLeft)" stroke-width="1.2" stroke-linecap="round" opacity="0.9"/>
+  <path d="M4.3 15h2.9" stroke="url(#panelLeft)" stroke-width="1.2" stroke-linecap="round" opacity="0.8"/>
+
+  <path d="M16.8 9h2.9" stroke="url(#panelRight)" stroke-width="1.2" stroke-linecap="round"/>
+  <path d="M17.6 12h2.1" stroke="url(#panelRight)" stroke-width="1.2" stroke-linecap="round" opacity="0.9"/>
+  <path d="M16.8 15h2.9" stroke="url(#panelRight)" stroke-width="1.2" stroke-linecap="round" opacity="0.8"/>
+
+  <path d="M9 10.5c1.5-1.2 4.5-1.2 6 0" stroke="url(#bridge)" stroke-width="1.35" stroke-linecap="round"/>
+  <path d="M9 13.5c1.5 1.2 4.5 1.2 6 0" stroke="url(#bridge)" stroke-width="1.35" stroke-linecap="round"/>
+
+  <path d="M7.5 4.5c2.5-1.8 6.5-1.8 9 0" stroke="url(#flowTop)" stroke-width="1.35" stroke-linecap="round"/>
+  <path d="m15.3 3.2 1.5 1.3-1.7.7" stroke="url(#flowTop)" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <path d="M16.5 19.5c-2.5 1.8-6.5 1.8-9 0" stroke="url(#flowBottom)" stroke-width="1.35" stroke-linecap="round"/>
+  <path d="m8.7 20.8-1.5-1.3 1.7-.7" stroke="url(#flowBottom)" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,62 +1,69 @@
 {
   "name": "context-bridge",
   "repository": "https://github.com/kirillnst/context-bridge.git",
+  "homepage": "https://github.com/kirillnst/context-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/kirillnst/context-bridge/issues"
+  },
   "displayName": "Context Bridge",
+  "publisher": "kirillnst",
   "description": "Build workspace context selections for LLM prompts and apply structured patch responses back to the project.",
   "version": "0.1.0",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
+  "icon": "media/icon.png",
   "preview": true,
   "engines": {
     "vscode": "^1.109.0"
   },
   "categories": [
-    "AI",
     "Other"
   ],
   "keywords": [
+    "ai",
     "llm",
-    "prompt",
+    "ai coding",
+    "coding assistant",
     "context",
+    "context management",
+    "workspace context",
+    "prompt",
+    "prompt context",
+    "code context",
+    "project context",
+    "code patch",
     "patch",
-    "workspace",
-    "developer-tools"
+    "ai patch",
+    "code editing",
+    "developer tools",
+    "copilot",
+    "claude",
+    "chatgpt",
+    "gemini"
   ],
   "galleryBanner": {
     "color": "#0F172A",
     "theme": "dark"
   },
   "markdown": "github",
-  "activationEvents": [
-    "onView:contextBridgeExplorer",
-    "onCommand:context-bridge.initializeWorkspaceFiles",
-    "onCommand:context-bridge.createSelection",
-    "onCommand:context-bridge.exportSelection",
-    "onCommand:context-bridge.importSelection",
-    "onCommand:context-bridge.activateSelection",
-    "onCommand:context-bridge.deactivateSelection",
-    "onCommand:context-bridge.renameSelection",
-    "onCommand:context-bridge.deleteSelection",
-    "onCommand:context-bridge.addToSelection",
-    "onCommand:context-bridge.removeFromSelection"
-  ],
   "main": "./dist/extension.js",
   "files": [
     "dist/**",
+    "media/**",
     "package.json",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE",
-    "SUPPORT.md"
+    "LICENSE"
   ],
   "contributes": {
-    "views": {
-      "explorer": [
-        {
-          "id": "contextBridgeExplorer",
-          "name": "Context Bridge"
-        }
-      ]
-    },
+  "views": {
+    "explorer": [
+      {
+        "id": "contextBridgeExplorer",
+        "name": "Context Bridge",
+        "icon": "media/view-icon.svg"
+      }
+    ]
+  },
     "viewsWelcome": [
       {
         "view": "contextBridgeExplorer",

@@ -1,52 +1,38 @@
 # Context Bridge
 
-Context Bridge helps you build workspace-based context selections for LLM prompts and apply structured patch responses back to your project.
+**Context Bridge** helps you send the right project context to an LLM and safely apply structured changes back to your VS Code workspace.
 
-## What it does
+## Features
 
-- Creates named selections in `.vscode/context-bridge.json`
-- Lets you create, rename, delete, activate, and deactivate selections from the Context Bridge view
-- Exports selected files into a single bridge document
-- Opens the bridge document in a virtual `context-bridge://bridge` editor
-- Imports structured patch responses back into the workspace
-- Shows file decorations for selection membership
-- Lets you add and remove files from selections directly from Explorer
+- Create reusable file and folder selections
+- Add or remove resources directly from Explorer
+- Export selected project context into a single document
+- Import structured LLM patches back into your workspace
+- Create, rename, activate, deactivate, and delete selections
+- See selection membership directly in Explorer
 
-## Quick start
+## Quick Start
 
-1. Open a folder or workspace in VS Code
-2. Open the **Context Bridge** view in Explorer
-3. Run **Initialize**
-4. Run **Create Selection**
-5. Add files or folders to the selection from Explorer
-6. Run **Export**
-7. Send the exported document to your LLM
-8. Paste the patch response back into the bridge document
-9. Run **Import**
+1. Open a project in VS Code.
+2. Open the **Context Bridge** view in Explorer.
+3. Click **Initialize**.
+4. Create a selection.
+5. Add files or folders from Explorer.
+6. Click **Export**.
+7. Send the generated context to your LLM.
+8. Paste the returned patch into the Context Bridge document.
+9. Click **Import** to apply it.
 
-## Configuration example
+## Patch Format
 
-After initialization, Context Bridge starts with an empty selection list:
+Context Bridge supports structured operations:
 
-```json
-{
-  "version": 2,
-  "selections": []
-}
-      "short": "PR",
-      "active": true,
-      "items": [
-        { "path": "src", "type": "folder" }
-      ],
-      "excludeItems": []
-    }
-  ]
-}
-```
+- `modify`
+- `add`
+- `delete`
+- `move`
 
-## Patch format
-
-Context Bridge imports a command-based patch format. Command words are wrapped as `c<COMMAND>b`, and blank separator lines are optional:
+Example:
 
 ```text
 cFILEb src/example.ts
@@ -57,47 +43,26 @@ cREPLACEb
 new text
 ```
 
-Supported actions:
-
-- `modify`
-- `add`
-- `delete`
-- `move`
-
-Use `cTOb <new/path>` for move destinations. Each command must start at the beginning of its own line.
-
-A no-op response can be:
+No changes:
 
 ```text
 NO_CHANGES
 ```
 
-## Development
+## Configuration
 
-```bash
-npm install
-npm run compile
+Selections are stored in:
+
+```text
+.vscode/context-bridge.json
 ```
 
-For production bundle:
+This lets project-specific context selections live alongside your workspace configuration.
 
-```bash
-npm run package
-```
+## Repository
 
-## Before first Marketplace publish
+https://github.com/kirillnst/context-bridge
 
-Fill in the following extension-specific metadata in `package.json`:
+## License
 
-- `publisher`
-- `repository`
-- `homepage`
-- `bugs`
-- `icon` pointing to a PNG file
-
-The existing `src/media/context-bridge.svg` can be used as the source asset for a future PNG icon.
-
-## Notes
-
-- The extension currently targets desktop VS Code through the Node.js extension host
-- The bridge document is virtual and does not exist in the workspace file system
+MIT
