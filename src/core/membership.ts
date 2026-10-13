@@ -26,28 +26,24 @@ export function getResourceMemberships(
 	return memberships;
 }
 
-export function buildDecorationBadge(memberships: ResourceMembershipInfo[]): string {
-	if (memberships.length === 1) {
-		return memberships[0].selection.short;
-	}
-
-	return memberships.length < 10 ? String(memberships.length) : '+';
-}
-
 export function buildDecorationTooltip(memberships: ResourceMembershipInfo[]): string {
 	const lines = memberships.map((membership) => {
 		const state = membership.selection.active ? 'active' : 'inactive';
-		const mode =
-			membership.kind === 'direct'
-				? 'directly'
-				: membership.kind === 'insideSelectedFolder'
-					? 'through selected folder'
-					: 'contains selected items';
-
-		return `${membership.selection.name} [${membership.selection.short}] (${state}) — ${mode}`;
+		return `${membership.selection.name} [${membership.selection.short}] (${state}) — ${formatMembershipKind(membership.kind)}`;
 	});
 
 	return `Context Bridge\n${lines.join('\n')}`;
+}
+
+export function formatMembershipKind(kind: ResourceMembershipKind): string {
+	switch (kind) {
+		case 'direct':
+			return 'directly';
+		case 'insideSelectedFolder':
+			return 'through selected folder';
+		case 'containsSelectedDescendant':
+			return 'contains selected items';
+	}
 }
 
 function getSelectionMembershipKind(

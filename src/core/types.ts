@@ -62,6 +62,17 @@ export interface SelectionMutationResult {
 	selectionName?: string;
 }
 
+export type SelectionBatchMutationResult =
+	| { status: 'configMissing' | 'selectionNotFound' }
+	| {
+		status: 'completed';
+		selectionName: string;
+		added: number;
+		removed: number;
+		excluded: number;
+		skipped: number;
+	};
+
 export type SelectionManagementStatus =
 	| 'created'
 	| 'renamed'
@@ -69,6 +80,7 @@ export type SelectionManagementStatus =
 	| 'duplicateName'
 	| 'selectionNotFound'
 	| 'invalidName'
+	| 'invalidShort'
 	| 'configMissing';
 
 export interface SelectionManagementResult {

@@ -68,26 +68,40 @@ export class ContextBridgeVirtualFileSystemProvider implements vscode.FileSystem
 		);
 	}
 
-	public async replaceContent(content: string): Promise<void> {
+	public async replaceContent(content: string): Promise<boolean> {
 		const document = this.getOpenDocument();
 
 		if (document) {
+			if (document.isDirty) {
+				const confirmed = await vscode.window.showWarningMessage(
+					'Context Bridge: the bridge document contains unsaved changes. Replace them with a new export?',
+					{ modal: true },
+					'Replace'
+				);
+				if (confirmed !== 'Replace') {
+					return false;
+				}
+			}
+
 			const editor = await vscode.window.showTextDocument(document, { preview: false });
 			const fullRange = new vscode.Range(
 				document.positionAt(0),
 				document.positionAt(document.getText().length)
 			);
 
-			await editor.edit((editBuilder) => {
+			const edited = await editor.edit((editBuilder) => {
 				editBuilder.replace(fullRange, content);
 			});
-			await document.save();
-			return;
+			if (!edited || !(await document.save())) {
+				throw new Error('Context Bridge: failed to save the exported bridge document.');
+			}
+			return true;
 		}
 
 		this.content = Buffer.from(content, 'utf8');
 		this.modifiedAt = Date.now();
 		this.emitChanged();
+		return true;
 	}
 
 	public async getContent(): Promise<string> {

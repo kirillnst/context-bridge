@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { readContextBridgeConfig } from './config';
 import {
 	isSafeRelativePath,
+	normalizeLineEndings,
 	normalizeRelativePath,
 	safeStat,
 	toWorkspaceRelativeUri,
@@ -9,6 +10,7 @@ import {
 import { isExcludedFromFolderSelection } from './selectionRules';
 import {
 	NO_EXTENSION_MARKER,
+	type ContextBridgeConfig,
 	type ContextBridgeExportFile,
 	type ContextBridgeItem,
 } from './types';
@@ -56,16 +58,11 @@ export async function countSelectionFiles(
 	return files.length;
 }
 
-export async function collectExportFiles(
-	folder: vscode.WorkspaceFolder
-): Promise<ContextBridgeExportFile[]> {
-	const config = await readContextBridgeConfig(folder);
-	if (!config) {
-		return [];
-	}
-
+export async function collectActiveExportPaths(
+	folder: vscode.WorkspaceFolder,
+	config: ContextBridgeConfig
+): Promise<Set<string>> {
 	const exportedPaths = new Set<string>();
-	const files: ContextBridgeExportFile[] = [];
 
 	for (const selection of config.selections) {
 		if (!selection.active) {
@@ -75,30 +72,41 @@ export async function collectExportFiles(
 		const existingItems = await filterExistingItems(folder, selection.items);
 		const existingExcludeItems = await filterExistingItems(folder, selection.excludeItems);
 		const filePaths = await collectSelectionFilePaths(folder, existingItems, existingExcludeItems);
-
 		for (const filePath of filePaths) {
-			if (exportedPaths.has(filePath)) {
-				continue;
-			}
+			exportedPaths.add(filePath);
+		}
+	}
 
-			if (shouldIgnoreFileContent(filePath, config.ignoreContentExtensions)) {
-				files.push({ path: filePath });
-				exportedPaths.add(filePath);
-				continue;
-			}
+	return exportedPaths;
+}
 
-			const fileUri = toWorkspaceRelativeUri(folder.uri, filePath);
+export async function collectExportFiles(
+	folder: vscode.WorkspaceFolder,
+	config?: ContextBridgeConfig
+): Promise<ContextBridgeExportFile[]> {
+	config ??= await readContextBridgeConfig(folder);
+	if (!config) {
+		return [];
+	}
 
-			try {
-				const raw = await vscode.workspace.fs.readFile(fileUri);
-				files.push({
-					path: filePath,
-					content: Buffer.from(raw).toString('utf8'),
-				});
-				exportedPaths.add(filePath);
-			} catch {
-				// ignored
-			}
+	const exportedPaths = await collectActiveExportPaths(folder, config);
+	const files: ContextBridgeExportFile[] = [];
+
+	for (const filePath of exportedPaths) {
+		if (shouldIgnoreFileContent(filePath, config.ignoreContentExtensions)) {
+			files.push({ path: filePath });
+			continue;
+		}
+
+		const fileUri = toWorkspaceRelativeUri(folder.uri, filePath);
+		try {
+			const raw = await vscode.workspace.fs.readFile(fileUri);
+			files.push({
+				path: filePath,
+				content: Buffer.from(raw).toString('utf8'),
+			});
+		} catch {
+			files.push({ path: filePath });
 		}
 	}
 
@@ -109,11 +117,11 @@ export function buildExportDocument(
 	files: ContextBridgeExportFile[],
 	prompt?: string
 ): string {
-	const promptSection = normalizeExportText(prompt ?? '').trim();
+	const promptSection = normalizeLineEndings(prompt ?? '').trim();
 	const fileSections = files.map((file) =>
 		file.content === undefined
 			? `FILE: ${file.path}`
-			: `FILE: ${file.path}\n\nCONTENT:\n${normalizeExportText(file.content)}`
+			: `FILE: ${file.path}\n\nCONTENT:\n${normalizeLineEndings(file.content)}`
 	);
 
 	return [promptSection, ...fileSections]
@@ -121,22 +129,24 @@ export function buildExportDocument(
 		.join('\n\n');
 }
 
-function shouldIgnoreFileContent(filePath: string, ignoreContentExtensions: string[]): boolean {
+export function getFileContentExtension(filePath: string): string {
 	const fileName = filePath.split('/').pop()?.toLowerCase() ?? '';
 	const lastDotIndex = fileName.lastIndexOf('.');
-	const hasExtension = lastDotIndex >= 0 && lastDotIndex < fileName.length - 1;
-
-	if (!hasExtension && ignoreContentExtensions.includes(NO_EXTENSION_MARKER)) {
-		return true;
-	}
-
-	return ignoreContentExtensions.some(
-		(extension) => extension !== NO_EXTENSION_MARKER && fileName.endsWith(extension)
-	);
+	return lastDotIndex > 0 && lastDotIndex < fileName.length - 1
+		? fileName.slice(lastDotIndex)
+		: NO_EXTENSION_MARKER;
 }
 
-function normalizeExportText(value: string): string {
-	return value.replace(/\r\n/g, '\n');
+export function shouldIgnoreFileContent(filePath: string, ignoreContentExtensions: string[]): boolean {
+	const extension = getFileContentExtension(filePath);
+	if (extension === NO_EXTENSION_MARKER) {
+		return ignoreContentExtensions.includes(NO_EXTENSION_MARKER);
+	}
+
+	const fileName = filePath.split('/').pop()?.toLowerCase() ?? '';
+	return ignoreContentExtensions.some(
+		(ignoredExtension) => ignoredExtension !== NO_EXTENSION_MARKER && fileName.endsWith(ignoredExtension)
+	);
 }
 
 async function collectSelectionFilePaths(

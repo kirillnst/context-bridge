@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
-import { filterExistingItems, countSelectionFiles } from './core/fileCollection';
-import { readContextBridgeConfig, writeContextBridgeConfig } from './core/config';
-import { buildDecorationBadge, buildDecorationTooltip, getResourceMemberships } from './core/membership';
-import { addItemToSelection, removeItemFromSelection, type SelectionItemsMutation } from './core/selectionMutation';
+import { filterExistingItems, countSelectionFiles, collectActiveExportPaths, getFileContentExtension, shouldIgnoreFileContent } from './core/fileCollection';
+import { createSelectionShort, isReservedSelectionShort, readContextBridgeConfig, toShortLabel, writeContextBridgeConfig } from './core/config';
+import { buildDecorationTooltip, getResourceMemberships } from './core/membership';
+import { addItemToSelection, mutateSelectionItemsBatch, removeItemFromSelection, type SelectionItemsMutation } from './core/selectionMutation';
+import { removeExactCollectionItem } from './core/selectionRules';
 import {
 	CONFIG_FILE_PATH,
 	type ContextBridgeConfig,
@@ -11,6 +12,7 @@ import {
 	type ResourceMembershipInfo,
 	type SelectionManagementResult,
 	type SelectionMutationResult,
+	type SelectionBatchMutationResult,
 	type SelectionSummary,
 } from './core/types';
 import { isSafeRelativePath, safeStat, toRelativeWorkspacePath } from './core/pathUtils';
@@ -30,24 +32,42 @@ export {
 	type SelectionManagementResult,
 	type SelectionManagementStatus,
 	type SelectionMutationResult,
+	type SelectionBatchMutationResult,
 	type SelectionMutationStatus,
 	type SelectionSummary,
 } from './core/types';
 export { createDefaultConfig, readContextBridgeConfig, writeContextBridgeConfig } from './core/config';
+export { formatMembershipKind } from './core/membership';
 export { buildExportDocument, collectExportFiles, filterExistingItems } from './core/fileCollection';
 export { ContextBridgeImportError, importContextBridgePatch } from './core/patch';
 export {
 	fileExists,
 	getBaseName,
 	isSafeRelativePath,
-	isValidJsonFile,
 	toJsonBytes,
 	toWorkspaceRelativeUri,
 } from './core/pathUtils';
 
+interface ResourceDecorationData {
+	memberships: ResourceMembershipInfo[];
+	exported: boolean;
+	ignored: boolean;
+}
+
+interface ExportedPaths {
+	files: Set<string>;
+	folders: Set<string>;
+}
+
 export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvider {
 	private readonly decorationEmitter = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
-	private readonly configCache = new Map<string, ContextBridgeConfig | undefined>();
+	private readonly configCache = new Map<string, Promise<ContextBridgeConfig | undefined>>();
+	private readonly exportedPathsCache = new Map<string, Promise<ExportedPaths>>();
+	private readonly resourceDecorationCache = new Map<string, Promise<ResourceDecorationData | undefined>>();
+	private readonly decorationProviders: vscode.Disposable[] = [];
+	private decorationProviderRefreshVersion = 0;
+	private registeredSelectionCount = -1;
+	private resourceChangeRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 	public readonly onDidChangeFileDecorations = this.decorationEmitter.event;
 
@@ -58,17 +78,31 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		configWatcher.onDidChange((uri) => this.handleConfigChanged(uri));
 		configWatcher.onDidDelete((uri) => this.handleConfigChanged(uri));
 
-		context.subscriptions.push(configWatcher);
+		const resourceWatcher = vscode.workspace.createFileSystemWatcher('**/*');
+		resourceWatcher.onDidCreate(() => this.scheduleResourceRefresh());
+		resourceWatcher.onDidDelete(() => this.scheduleResourceRefresh());
+
+		context.subscriptions.push(configWatcher, resourceWatcher);
 
 		context.subscriptions.push(
-			vscode.workspace.onDidCreateFiles(() => this.refreshDecorations()),
-			vscode.workspace.onDidDeleteFiles(() => this.refreshDecorations()),
-			vscode.workspace.onDidRenameFiles(() => this.refreshDecorations()),
+			vscode.workspace.onDidCreateFiles(() => this.scheduleResourceRefresh()),
+			vscode.workspace.onDidDeleteFiles(() => this.scheduleResourceRefresh()),
+			vscode.workspace.onDidRenameFiles(() => this.scheduleResourceRefresh()),
 			vscode.workspace.onDidChangeWorkspaceFolders(() => {
 				this.configCache.clear();
 				this.refreshDecorations();
+				void this.synchronizeDecorationProviders();
 			})
 		);
+
+		context.subscriptions.push(new vscode.Disposable(() => {
+			this.decorationProviderRefreshVersion++;
+			if (this.resourceChangeRefreshTimer !== undefined) {
+				clearTimeout(this.resourceChangeRefreshTimer);
+			}
+			this.disposeDecorationProviders();
+		}));
+		void this.synchronizeDecorationProviders();
 	}
 
 	public async getSelectionSummaries(folder: vscode.WorkspaceFolder): Promise<SelectionSummary[]> {
@@ -85,11 +119,7 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 			const fileCount = await countSelectionFiles(folder, existingItems, existingExcludeItems);
 
 			summaries.push({
-				selection: {
-					...selection,
-					items: existingItems,
-					excludeItems: existingExcludeItems,
-				},
+				selection,
 				selectionIndex,
 				fileCount,
 			});
@@ -134,7 +164,7 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 			return { status: 'configMissing' };
 		}
 
-		const name = normalizeSelectionName(rawName);
+		const name = rawName.trim();
 		if (name.length === 0) {
 			return { status: 'invalidName' };
 		}
@@ -172,7 +202,7 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 			return { status: 'selectionNotFound' };
 		}
 
-		const name = normalizeSelectionName(rawName);
+		const name = rawName.trim();
 		if (name.length === 0) {
 			return { status: 'invalidName' };
 		}
@@ -190,7 +220,6 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 				? {
 					...current,
 					name,
-					short: createSelectionShort(name),
 				}
 				: current
 		);
@@ -198,6 +227,37 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		await this.persistSelections(folder, config, nextSelections);
 
 		return { status: 'renamed', selectionName: name };
+	}
+
+	public async renameSelectionShort(
+		folder: vscode.WorkspaceFolder,
+		selectionIndex: number,
+		rawShort: string
+	): Promise<SelectionManagementResult> {
+		const config = await this.readConfig(folder);
+		if (!config) {
+			return { status: 'configMissing' };
+		}
+
+		const selection = config.selections[selectionIndex];
+		if (!selection) {
+			return { status: 'selectionNotFound' };
+		}
+
+		const trimmed = rawShort.trim();
+		if (trimmed.length === 0 || trimmed.length > 2 || isReservedSelectionShort(trimmed)) {
+			return { status: 'invalidShort' };
+		}
+
+		const short = toShortLabel(trimmed);
+		if (selection.short !== short) {
+			const nextSelections = config.selections.map((current, index) =>
+				index === selectionIndex ? { ...current, short } : current
+			);
+			await this.persistSelections(folder, config, nextSelections);
+		}
+
+		return { status: 'renamed', selectionName: selection.name };
 	}
 
 	public async deleteSelection(
@@ -227,24 +287,20 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		resourceUri: vscode.Uri,
 		selectionIndex: number
 	): Promise<SelectionMutationResult> {
-		const folder = vscode.workspace.getWorkspaceFolder(resourceUri);
-		if (!folder) {
-			return { status: 'invalidResource' };
-		}
-
-		const targetItem = await toContextBridgeItem(folder, resourceUri);
-		if (!targetItem) {
-			return { status: 'invalidResource' };
-		}
-
-		return this.mutateSelection(folder, selectionIndex, (selection) =>
-			addItemToSelection(selection.items, selection.excludeItems, targetItem)
-		);
+		return this.mutateResourceInSelection(resourceUri, selectionIndex, addItemToSelection);
 	}
 
 	public async removeResourceFromSelection(
 		resourceUri: vscode.Uri,
 		selectionIndex: number
+	): Promise<SelectionMutationResult> {
+		return this.mutateResourceInSelection(resourceUri, selectionIndex, removeItemFromSelection);
+	}
+
+	private async mutateResourceInSelection(
+		resourceUri: vscode.Uri,
+		selectionIndex: number,
+		mutate: typeof addItemToSelection
 	): Promise<SelectionMutationResult> {
 		const folder = vscode.workspace.getWorkspaceFolder(resourceUri);
 		if (!folder) {
@@ -257,8 +313,125 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		}
 
 		return this.mutateSelection(folder, selectionIndex, (selection) =>
-			removeItemFromSelection(selection.items, selection.excludeItems, targetItem)
+			mutate(selection.items, selection.excludeItems, targetItem)
 		);
+	}
+
+	public async mutateResourcesInSelection(
+		folder: vscode.WorkspaceFolder,
+		resourceUris: vscode.Uri[],
+		selectionIndex: number,
+		mode: 'add' | 'remove'
+	): Promise<SelectionBatchMutationResult> {
+		const config = await this.readConfig(folder);
+		if (!config) {
+			return { status: 'configMissing' };
+		}
+
+		const selection = config.selections[selectionIndex];
+		if (!selection) {
+			return { status: 'selectionNotFound' };
+		}
+
+		const seen = new Set<string>();
+		const targets: ContextBridgeItem[] = [];
+		let invalidCount = 0;
+		for (const uri of resourceUris) {
+			const key = uri.toString();
+			if (seen.has(key)) {
+				invalidCount += 1;
+				continue;
+			}
+			seen.add(key);
+
+			if (vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() !== folder.uri.toString()) {
+				invalidCount += 1;
+				continue;
+			}
+
+			const item = await toContextBridgeItem(folder, uri);
+			if (item) {
+				targets.push(item);
+			} else {
+				invalidCount += 1;
+			}
+		}
+
+		const mutation = mutateSelectionItemsBatch(selection.items, selection.excludeItems, targets, mode);
+		if (mutation.added + mutation.removed + mutation.excluded > 0) {
+			const nextSelections = config.selections.map((current, index) =>
+				index === selectionIndex
+					? { ...current, items: mutation.items, excludeItems: mutation.excludeItems }
+					: current
+			);
+			await this.persistSelections(folder, config, nextSelections);
+		}
+
+		return {
+			status: 'completed',
+			selectionName: selection.name,
+			added: mutation.added,
+			removed: mutation.removed,
+			excluded: mutation.excluded,
+			skipped: mutation.skipped + invalidCount,
+		};
+	}
+
+	public async removeSelectionItem(
+		folder: vscode.WorkspaceFolder,
+		selectionIndex: number,
+		targetItem: ContextBridgeItem,
+		isExclusion: boolean
+	): Promise<SelectionMutationResult> {
+		return this.mutateSelection(folder, selectionIndex, (selection) => {
+			if (!isExclusion) {
+				return removeItemFromSelection(selection.items, selection.excludeItems, targetItem);
+			}
+
+			const excludeItems = removeExactCollectionItem(selection.excludeItems, targetItem);
+			return {
+				changed: excludeItems.length !== selection.excludeItems.length,
+				status: excludeItems.length !== selection.excludeItems.length ? 'removed' : 'notFound',
+				items: selection.items,
+				excludeItems,
+			};
+		});
+	}
+
+	public async setFileContentExtensionIgnored(
+		resourceUri: vscode.Uri,
+		ignored: boolean
+	): Promise<'added' | 'removed' | 'unchanged' | 'configMissing' | 'invalidResource'> {
+		const folder = vscode.workspace.getWorkspaceFolder(resourceUri);
+		if (!folder || resourceUri.scheme !== 'file') {
+			return 'invalidResource';
+		}
+
+		const stat = await safeStat(resourceUri);
+		if (!stat || (stat.type & vscode.FileType.File) === 0) {
+			return 'invalidResource';
+		}
+
+		const config = await this.readConfig(folder);
+		if (!config) {
+			return 'configMissing';
+		}
+
+		const extension = getFileContentExtension(resourceUri.path);
+		const alreadyIgnored = config.ignoreContentExtensions.includes(extension);
+		if (alreadyIgnored === ignored) {
+			return 'unchanged';
+		}
+
+		await writeContextBridgeConfig(folder, {
+			...config,
+			ignoreContentExtensions: ignored
+				? [...config.ignoreContentExtensions, extension]
+				: config.ignoreContentExtensions.filter((item) => item !== extension),
+		});
+		this.invalidateFolderCache(folder);
+		this.refreshDecorations();
+		return ignored ? 'added' : 'removed';
 	}
 
 	public async getMemberships(resourceUri: vscode.Uri): Promise<ResourceMembershipInfo[]> {
@@ -290,59 +463,169 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		uri: vscode.Uri,
 		_token: vscode.CancellationToken
 	): Promise<vscode.FileDecoration | undefined> {
+		const data = await this.getDecorationData(uri);
+		if (!data?.exported) {
+			return undefined;
+		}
+
+		const decoration = new vscode.FileDecoration('E', 'Context Bridge: included in export');
+		decoration.propagate = false;
+		return decoration;
+	}
+
+	private async provideIgnoredContentDecoration(
+		uri: vscode.Uri
+	): Promise<vscode.FileDecoration | undefined> {
+		const data = await this.getDecorationData(uri);
+		if (!data?.ignored) {
+			return undefined;
+		}
+
+		const decoration = new vscode.FileDecoration('I', 'Context Bridge: file content ignored during export');
+		decoration.propagate = false;
+		return decoration;
+	}
+
+	private async provideSelectionDecoration(
+		uri: vscode.Uri,
+		selectionIndex: number
+	): Promise<vscode.FileDecoration | undefined> {
+		const data = await this.getDecorationData(uri);
+		const membership = data?.memberships.find((item) => item.selectionIndex === selectionIndex);
+		if (!membership) {
+			return undefined;
+		}
+
+		const short = membership.selection.short;
+		const badge = short.length <= 2 ? short : Array.from(short)[0] ?? '?';
+		const decoration = new vscode.FileDecoration(badge, buildDecorationTooltip([membership]));
+		decoration.propagate = false;
+		return decoration;
+	}
+
+	private async getDecorationData(uri: vscode.Uri): Promise<ResourceDecorationData | undefined> {
 		if (uri.scheme !== 'file') {
 			return undefined;
 		}
 
+		const key = uri.toString();
+		let pending = this.resourceDecorationCache.get(key);
+		if (!pending) {
+			pending = this.resolveDecorationData(uri);
+			this.resourceDecorationCache.set(key, pending);
+		}
+
+		return pending;
+	}
+
+	private async resolveDecorationData(uri: vscode.Uri): Promise<ResourceDecorationData | undefined> {
 		const folder = vscode.workspace.getWorkspaceFolder(uri);
 		if (!folder) {
 			return undefined;
 		}
 
 		const relativePath = toRelativeWorkspacePath(folder, uri);
-		if (!relativePath) {
+		const isWorkspaceRoot = uri.toString() === folder.uri.toString();
+		if (!relativePath && !isWorkspaceRoot) {
 			return undefined;
 		}
 
-		const stat = await safeStat(uri);
-		if (!stat) {
-			return undefined;
-		}
-
-		const config = await this.readConfig(folder);
-		if (!config) {
+		const [stat, config] = await Promise.all([safeStat(uri), this.readConfig(folder)]);
+		if (!stat || !config) {
 			return undefined;
 		}
 
 		const isFolder = (stat.type & vscode.FileType.Directory) !== 0;
-		const memberships = getResourceMemberships(config.selections, relativePath, isFolder);
-		if (memberships.length === 0) {
-			return undefined;
+		const ignored = !isFolder && relativePath !== undefined &&
+			shouldIgnoreFileContent(relativePath, config.ignoreContentExtensions);
+		const memberships = relativePath
+			? getResourceMemberships(config.selections, relativePath, isFolder)
+			: [];
+		if (memberships.length === 0 && !isWorkspaceRoot) {
+			return ignored ? { memberships, exported: false, ignored } : undefined;
 		}
 
-		const activeMemberships = memberships.filter((membership) => membership.selection.active);
-		const primaryMemberships = activeMemberships.length > 0 ? activeMemberships : memberships;
-
-		const decoration = new vscode.FileDecoration(
-			buildDecorationBadge(primaryMemberships),
-			buildDecorationTooltip(memberships)
-		);
-
-		decoration.propagate = false;
-		return decoration;
+		const exportedPaths = await this.getExportedPaths(folder, config);
+		return {
+			memberships,
+			ignored,
+			exported: isWorkspaceRoot
+				? exportedPaths.files.size > 0
+				: isFolder
+					? exportedPaths.folders.has(relativePath!)
+					: exportedPaths.files.has(relativePath!),
+		};
 	}
 
-	private async readConfig(folder: vscode.WorkspaceFolder): Promise<ContextBridgeConfig | undefined> {
-		const cacheKey = folder.uri.toString();
-
-		if (this.configCache.has(cacheKey)) {
-			return this.configCache.get(cacheKey);
+	private getExportedPaths(
+		folder: vscode.WorkspaceFolder,
+		config: ContextBridgeConfig
+	): Promise<ExportedPaths> {
+		const key = folder.uri.toString();
+		let pending = this.exportedPathsCache.get(key);
+		if (!pending) {
+			pending = collectActiveExportPaths(folder, config).then((files) => {
+				const folders = new Set<string>();
+				for (const filePath of files) {
+					let separator = filePath.lastIndexOf('/');
+					while (separator > 0) {
+						folders.add(filePath.slice(0, separator));
+						separator = filePath.lastIndexOf('/', separator - 1);
+					}
+				}
+				return { files, folders };
+			});
+			this.exportedPathsCache.set(key, pending);
 		}
 
-		const config = await readContextBridgeConfig(folder);
-		this.configCache.set(cacheKey, config);
+		return pending;
+	}
 
-		return config;
+	private async synchronizeDecorationProviders(): Promise<void> {
+		const version = ++this.decorationProviderRefreshVersion;
+		const folders = vscode.workspace.workspaceFolders ?? [];
+		const configs = await Promise.all(folders.map((folder) => this.readConfig(folder)));
+		if (version !== this.decorationProviderRefreshVersion) {
+			return;
+		}
+
+		const count = configs.reduce((max, config) => Math.max(max, config?.selections.length ?? 0), 0);
+		if (count === this.registeredSelectionCount) {
+			return;
+		}
+
+		this.disposeDecorationProviders();
+		this.registeredSelectionCount = count;
+		this.decorationProviders.push(vscode.window.registerFileDecorationProvider(this));
+		const ignoredContentProvider: vscode.FileDecorationProvider = {
+			onDidChangeFileDecorations: this.onDidChangeFileDecorations,
+			provideFileDecoration: (uri) => this.provideIgnoredContentDecoration(uri),
+		};
+		this.decorationProviders.push(vscode.window.registerFileDecorationProvider(ignoredContentProvider));
+		for (let index = 0; index < count; index++) {
+			const provider: vscode.FileDecorationProvider = {
+				onDidChangeFileDecorations: this.onDidChangeFileDecorations,
+				provideFileDecoration: (uri) => this.provideSelectionDecoration(uri, index),
+			};
+			this.decorationProviders.push(vscode.window.registerFileDecorationProvider(provider));
+		}
+	}
+
+	private disposeDecorationProviders(): void {
+		for (const provider of this.decorationProviders) {
+			provider.dispose();
+		}
+		this.decorationProviders.length = 0;
+	}
+
+	private readConfig(folder: vscode.WorkspaceFolder): Promise<ContextBridgeConfig | undefined> {
+		const cacheKey = folder.uri.toString();
+		let pending = this.configCache.get(cacheKey);
+		if (!pending) {
+			pending = readContextBridgeConfig(folder);
+			this.configCache.set(cacheKey, pending);
+		}
+		return pending;
 	}
 
 	private async mutateSelection(
@@ -392,6 +675,7 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		});
 		this.invalidateFolderCache(folder);
 		this.refreshDecorations();
+		void this.synchronizeDecorationProviders();
 	}
 
 	private handleConfigChanged(uri: vscode.Uri): void {
@@ -404,13 +688,26 @@ export class ContextBridgeSelectionEngine implements vscode.FileDecorationProvid
 		}
 
 		this.refreshDecorations();
+		void this.synchronizeDecorationProviders();
 	}
 
 	private invalidateFolderCache(folder: vscode.WorkspaceFolder): void {
 		this.configCache.delete(folder.uri.toString());
 	}
 
+	private scheduleResourceRefresh(): void {
+		if (this.resourceChangeRefreshTimer !== undefined) {
+			clearTimeout(this.resourceChangeRefreshTimer);
+		}
+		this.resourceChangeRefreshTimer = setTimeout(() => {
+			this.resourceChangeRefreshTimer = undefined;
+			this.refreshDecorations();
+		}, 100);
+	}
+
 	private refreshDecorations(): void {
+		this.exportedPathsCache.clear();
+		this.resourceDecorationCache.clear();
 		this.decorationEmitter.fire(undefined);
 	}
 }
@@ -440,10 +737,6 @@ async function toContextBridgeItem(
 	return undefined;
 }
 
-function normalizeSelectionName(value: string): string {
-	return value.trim();
-}
-
 function hasSelectionName(
 	selections: ContextBridgeSelection[],
 	name: string,
@@ -456,29 +749,5 @@ function hasSelectionName(
 			index !== exceptIndex && selection.name.trim().toLocaleLowerCase() === normalizedName
 	);
 }
-
-function createSelectionShort(selectionName: string): string {
-	const trimmed = selectionName.trim();
-	if (trimmed.length === 0) {
-		return '?';
-	}
-
-	const parts = trimmed.split(/\s+/).filter((part) => part.length > 0);
-	if (parts.length === 0) {
-		return '?';
-	}
-
-	if (parts.length === 1) {
-		return toShortLabel(parts[0]);
-	}
-
-	return toShortLabel(parts.map((part) => Array.from(part)[0] ?? '').join(''));
-}
-
-function toShortLabel(value: string): string {
-	const trimmed = Array.from(value.trim()).slice(0, 2).join('');
-	return trimmed.length > 0 ? trimmed.toUpperCase() : '?';
-}
-
 
 

@@ -9,82 +9,14 @@ import {
 } from './types';
 import {
 	isSafeRelativePath,
+	normalizeLineEndings,
 	normalizeRelativePath,
 	toJsonBytes,
 	toWorkspaceRelativeUri,
 } from './pathUtils';
 import { dedupeItems } from './selectionRules';
 
-const DEFAULT_IGNORE_CONTENT_EXTENSIONS = [
-	NO_EXTENSION_MARKER,
-	'.3ds',
-	'.7z',
-	'.a',
-	'.apk',
-	'.avi',
-	'.bin',
-	'.blend',
-	'.bmp',
-	'.bz2',
-	'.cab',
-	'.class',
-	'.db',
-	'.deb',
-	'.dll',
-	'.dmg',
-	'.doc',
-	'.docx',
-	'.eot',
-	'.exe',
-	'.fbx',
-	'.flac',
-	'.gif',
-	'.glb',
-	'.gz',
-	'.ico',
-	'.iso',
-	'.jar',
-	'.jpeg',
-	'.jpg',
-	'.lib',
-	'.m4a',
-	'.mkv',
-	'.mov',
-	'.mp3',
-	'.mp4',
-	'.msi',
-	'.node',
-	'.o',
-	'.ogg',
-	'.otf',
-	'.pak',
-	'.pdf',
-	'.png',
-	'.ppt',
-	'.pptx',
-	'.psd',
-	'.pyc',
-	'.pyd',
-	'.rar',
-	'.rpm',
-	'.so',
-	'.sqlite',
-	'.tar',
-	'.tgz',
-	'.tif',
-	'.tiff',
-	'.ttf',
-	'.wav',
-	'.wasm',
-	'.webm',
-	'.webp',
-	'.woff',
-	'.woff2',
-	'.xls',
-	'.xlsx',
-	'.xz',
-	'.zip',
-] as const;
+const DEFAULT_IGNORE_CONTENT_EXTENSIONS: readonly string[] = [];
 
 const DEFAULT_EXPORT_PROMPT = [
 	'You are a technical assistant for the project and a generator of Context Bridge patch responses.',
@@ -422,7 +354,7 @@ function normalizePrompt(value: unknown): string {
 }
 
 function normalizePromptText(value: string): string {
-	return value.replace(/\r\n/g, '\n').trim();
+	return normalizeLineEndings(value).trim();
 }
 
 function normalizeSelection(value: unknown, index: number): ContextBridgeSelection | undefined {
@@ -485,18 +417,26 @@ function normalizeSelectionItem(value: unknown): ContextBridgeItem | undefined {
 
 function normalizeSelectionShort(value: unknown, fallbackName: string): string {
 	if (typeof value === 'string' && value.trim().length > 0) {
-		return toShortLabel(value);
+		const short = toShortLabel(value);
+		if (!isReservedSelectionShort(short)) {
+			return short;
+		}
 	}
 
-	return getSelectionBadgeFromName(fallbackName);
+	return createSelectionShort(fallbackName);
 }
 
-function toShortLabel(value: string): string {
+export function toShortLabel(value: string): string {
 	const trimmed = Array.from(value.trim()).slice(0, 2).join('');
 	return trimmed.length > 0 ? trimmed.toUpperCase() : '?';
 }
 
-function getSelectionBadgeFromName(selectionName: string): string {
+export function isReservedSelectionShort(value: string): boolean {
+	const normalized = value.trim().toUpperCase();
+	return normalized === 'E' || normalized === 'I';
+}
+
+export function createSelectionShort(selectionName: string): string {
 	const trimmed = selectionName.trim();
 	if (trimmed.length === 0) {
 		return '?';
@@ -507,15 +447,11 @@ function getSelectionBadgeFromName(selectionName: string): string {
 		return '?';
 	}
 
-	if (parts.length === 1) {
-		return toShortLabel(parts[0]);
-	}
+	const label = parts.length === 1
+		? toShortLabel(parts[0])
+		: toShortLabel(parts.map((part) => Array.from(part)[0] ?? '').join(''));
 
-	const acronym = parts
-		.map((part) => Array.from(part)[0] ?? '')
-		.join('');
-
-	return toShortLabel(acronym);
+	return isReservedSelectionShort(label) ? `${label}S` : label;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

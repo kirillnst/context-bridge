@@ -58,27 +58,16 @@ export function toWorkspaceRelativeUri(baseUri: vscode.Uri, relativePath: string
 	return vscode.Uri.joinPath(baseUri, ...segments);
 }
 
+export function normalizeLineEndings(value: string): string {
+	return value.replace(/\r\n/g, '\n');
+}
+
 export function toJsonBytes(value: unknown): Uint8Array {
 	const json = `${JSON.stringify(value, null, 2)}\n`;
 	return Buffer.from(json, 'utf8');
 }
 
 export async function fileExists(uri: vscode.Uri): Promise<boolean> {
-	try {
-		await vscode.workspace.fs.stat(uri);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-export async function isValidJsonFile(uri: vscode.Uri): Promise<boolean> {
-	try {
-		const raw = await vscode.workspace.fs.readFile(uri);
-		JSON.parse(Buffer.from(raw).toString('utf8'));
-		return true;
-	} catch {
-		return false;
-	}
+	return (await safeStat(uri)) !== undefined;
 }
 

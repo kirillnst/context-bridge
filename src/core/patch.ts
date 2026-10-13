@@ -1,9 +1,12 @@
-import * as path from 'path';import * as vscode from 'vscode';
+import * as path from 'path';
+import * as vscode from 'vscode';
 import type { ContextBridgeImportSummary } from './types';
 import {
 	fileExists,
 	isSafeRelativePath,
+	normalizeLineEndings,
 	normalizeRelativePath,
+	safeStat,
 	toWorkspaceRelativeUri,
 } from './pathUtils';
 import {
@@ -54,6 +57,10 @@ export async function importContextBridgePatch(
 	const patchContent = extractPatchContent(rawPatchDocument);
 	const summary = createEmptyImportSummary();
 
+	if (!folder || !(folder.uri instanceof vscode.Uri)) {
+		throw new ContextBridgeImportError('a valid workspace folder is required.', summary);
+	}
+
 	if (patchContent.trim() === 'NO_CHANGES') {
 		return summary;
 	}
@@ -61,6 +68,10 @@ export async function importContextBridgePatch(
 	const patchFiles = parseContextBridgePatch(patchContent);
 
 	try {
+		if (patchFiles.every((patchFile) => patchFile.action === 'modify')) {
+			await validateModifyPatchFiles(folder, patchFiles);
+		}
+
 		for (const patchFile of patchFiles) {
 			await applyContextBridgePatchFile(folder, patchFile, summary);
 		}
@@ -75,6 +86,36 @@ export async function importContextBridgePatch(
 	}
 }
 
+async function validateModifyPatchFiles(
+	folder: vscode.WorkspaceFolder,
+	patchFiles: ParsedContextBridgePatchFile[]
+): Promise<void> {
+	const stagedContent = new Map<string, string>();
+	for (const patchFile of patchFiles) {
+		const sourcePath = normalizeRelativePath(patchFile.path);
+		if (!isSafeRelativePath(sourcePath)) {
+			throw new Error(`invalid path "${patchFile.path}".`);
+		}
+
+		try {
+			const uri = toWorkspaceRelativeUri(folder.uri, sourcePath);
+			ensureDocumentNotDirty(uri, sourcePath);
+
+			let content = stagedContent.get(sourcePath);
+			if (content === undefined) {
+				content = normalizeLineEndings(await readModifiableFile(uri, sourcePath));
+			}
+
+			stagedContent.set(
+				sourcePath,
+				applyPatchModifyOperations(content, patchFile.operations ?? [])
+			);
+		} catch (error) {
+			throw new Error(`"${sourcePath}": ${toImportErrorMessage(error)}`);
+		}
+	}
+}
+
 function createEmptyImportSummary(): ContextBridgeImportSummary {
 	return {
 		added: 0,
@@ -85,7 +126,7 @@ function createEmptyImportSummary(): ContextBridgeImportSummary {
 }
 
 function extractPatchContent(value: string): string {
-	const normalized = normalizeExportText(value);
+	const normalized = normalizeLineEndings(value);
 	const fencedMatch = normalized.match(
 		/^(`{3,})context-bridge-patch(?:[^\n]*)\n([\s\S]*?)^\1\s*$/m
 	);
@@ -328,18 +369,9 @@ async function applyContextBridgePatchFile(
 				const targetUri = toWorkspaceRelativeUri(folder.uri, sourcePath);
 				ensureDocumentNotDirty(targetUri, sourcePath);
 
-				const stat = await safeFileStat(targetUri);
-				if (!stat || (stat.type & vscode.FileType.File) === 0) {
-					throw new Error(`file "${sourcePath}" for modify was not found.`);
-				}
-
-				const currentContent = await readTextFile(targetUri);
-				if (currentContent === undefined) {
-					throw new Error(`failed to read "${sourcePath}".`);
-				}
-
+				const currentContent = await readModifiableFile(targetUri, sourcePath);
 				const nextContent = applyPatchModifyOperations(
-					normalizeExportText(currentContent),
+					normalizeLineEndings(currentContent),
 					patchFile.operations ?? []
 				);
 				const eol = detectLineEnding(currentContent);
@@ -375,7 +407,7 @@ async function applyContextBridgePatchFile(
 				const targetUri = toWorkspaceRelativeUri(folder.uri, sourcePath);
 				ensureDocumentNotDirty(targetUri, sourcePath);
 
-				const stat = await safeFileStat(targetUri);
+				const stat = await safeStat(targetUri);
 				if (!stat) {
 					throw new Error(`path "${sourcePath}" for delete was not found.`);
 				}
@@ -495,6 +527,19 @@ function ensureDocumentNotDirty(uri: vscode.Uri, relativePath: string): void {
 	}
 }
 
+async function readModifiableFile(uri: vscode.Uri, relativePath: string): Promise<string> {
+	const stat = await safeStat(uri);
+	if (!stat || (stat.type & vscode.FileType.File) === 0) {
+		throw new Error(`file "${relativePath}" for modify was not found.`);
+	}
+
+	const content = await readTextFile(uri);
+	if (content === undefined) {
+		throw new Error(`failed to read "${relativePath}".`);
+	}
+	return content;
+}
+
 async function readTextFile(uri: vscode.Uri): Promise<string | undefined> {
 	const openDocument = vscode.workspace.textDocuments.find(
 		(candidate) => candidate.uri.toString() === uri.toString()
@@ -532,18 +577,6 @@ function applyLineEnding(value: string, lineEnding: '\n' | '\r\n'): string {
 	return lineEnding === '\n' ? value : value.replace(/\n/g, '\r\n');
 }
 
-function normalizeExportText(value: string): string {
-	return value.replace(/\r\n/g, '\n');
-}
-
 function toImportErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : 'unknown error.';
-}
-
-async function safeFileStat(uri: vscode.Uri): Promise<vscode.FileStat | undefined> {
-	try {
-		return await vscode.workspace.fs.stat(uri);
-	} catch {
-		return undefined;
-	}
 }

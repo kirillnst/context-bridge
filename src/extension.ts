@@ -10,15 +10,40 @@ export function activate(context: vscode.ExtensionContext): void {
 	const explorerProvider = new ContextBridgeExplorerProvider(context, selectionEngine);
 	const bridgeDocumentProvider = new ContextBridgeVirtualFileSystemProvider();
 
+	const treeView = vscode.window.createTreeView(CONTEXT_BRIDGE_EXPLORER_VIEW_ID, {
+		treeDataProvider: explorerProvider,
+		showCollapseAll: true,
+	});
+
 	context.subscriptions.push(
+		treeView.onDidChangeCheckboxState(async (event) => {
+			for (const [node, state] of event.items) {
+				if (node.kind !== 'selection') {
+					continue;
+				}
+
+				try {
+					const updated = await selectionEngine.setSelectionActiveState(
+						node.folder,
+						node.selectionIndex,
+						state === vscode.TreeItemCheckboxState.Checked
+					);
+					if (!updated) {
+						void vscode.window.showErrorMessage(
+							`Context Bridge: could not update selection "${node.selection.name}".`
+						);
+					}
+				} catch (error) {
+					const message = error instanceof Error ? error.message : 'unknown error';
+					void vscode.window.showErrorMessage(`Context Bridge: ${message}`);
+				}
+			}
+			explorerProvider.refresh();
+		}),
+		treeView,
 		vscode.workspace.registerFileSystemProvider('context-bridge', bridgeDocumentProvider, {
 			isCaseSensitive: true,
 		}),
-		vscode.window.createTreeView(CONTEXT_BRIDGE_EXPLORER_VIEW_ID, {
-			treeDataProvider: explorerProvider,
-			showCollapseAll: true,
-		}),
-		vscode.window.registerFileDecorationProvider(selectionEngine),
 		...registerCommands(explorerProvider, selectionEngine, bridgeDocumentProvider)
 	);
 }

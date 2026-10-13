@@ -86,3 +86,53 @@ export function removeItemFromSelection(
 	return { changed: false, status: 'notFound', items, excludeItems };
 }
 
+export interface SelectionItemsBatchMutation {
+	items: ContextBridgeItem[];
+	excludeItems: ContextBridgeItem[];
+	added: number;
+	removed: number;
+	excluded: number;
+	skipped: number;
+}
+
+export function mutateSelectionItemsBatch(
+	items: ContextBridgeItem[],
+	excludeItems: ContextBridgeItem[],
+	targets: ContextBridgeItem[],
+	mode: 'add' | 'remove'
+): SelectionItemsBatchMutation {
+	let nextItems = items;
+	let nextExcludeItems = excludeItems;
+	let added = 0;
+	let removed = 0;
+	let excluded = 0;
+	let skipped = 0;
+
+	const sortedTargets = [...targets].sort((left, right) =>
+		left.path.split('/').length - right.path.split('/').length ||
+		left.path.localeCompare(right.path)
+	);
+
+	for (const target of sortedTargets) {
+		const mutation = mode === 'add'
+			? addItemToSelection(nextItems, nextExcludeItems, target)
+			: removeItemFromSelection(nextItems, nextExcludeItems, target);
+		if (!mutation.changed) {
+			skipped += 1;
+			continue;
+		}
+
+		nextItems = mutation.items;
+		nextExcludeItems = mutation.excludeItems;
+		if (mode === 'add') {
+			added += 1;
+		} else if (mutation.status === 'excluded') {
+			excluded += 1;
+		} else {
+			removed += 1;
+		}
+	}
+
+	return { items: nextItems, excludeItems: nextExcludeItems, added, removed, excluded, skipped };
+}
+

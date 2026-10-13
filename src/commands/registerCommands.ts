@@ -5,10 +5,12 @@ import {
 	type ResourceMembershipInfo,
 	type SelectionManagementResult,
 	type SelectionMutationResult,
+	type SelectionBatchMutationResult,
 	buildExportDocument,
 	collectExportFiles,
 	createDefaultConfig,
 	fileExists,
+	formatMembershipKind,
 	importContextBridgePatch,
 	readContextBridgeConfig,
 	toWorkspaceRelativeUri,
@@ -52,9 +54,14 @@ export function registerCommands(
 			selectionEngine
 		),
 		registerRenameSelectionCommand(explorerProvider, selectionEngine),
+		registerRenameSelectionShortCommand(explorerProvider, selectionEngine),
 		registerDeleteSelectionCommand(explorerProvider, selectionEngine),
 		registerAddToSelectionCommand(explorerProvider, selectionEngine),
 		registerRemoveFromSelectionCommand(explorerProvider, selectionEngine),
+		registerIgnoredContentExtensionCommand(COMMANDS.addIgnoredContentExtension, true, explorerProvider, selectionEngine),
+		registerIgnoredContentExtensionCommand(COMMANDS.removeIgnoredContentExtension, false, explorerProvider, selectionEngine),
+		registerRemoveSelectionItemCommand(COMMANDS.removeSelectionItem, false, explorerProvider, selectionEngine),
+		registerRemoveSelectionItemCommand(COMMANDS.removeExclusionItem, true, explorerProvider, selectionEngine),
 	];
 }
 
@@ -63,8 +70,8 @@ function registerInitializeWorkspaceFilesCommand(
 ): vscode.Disposable {
 	return vscode.commands.registerCommand(
 		COMMANDS.initializeWorkspaceFiles,
-		async (targetFolder?: vscode.WorkspaceFolder) => {
-			const folder = targetFolder ?? (await getTargetWorkspaceFolder());
+		async (targetFolder?: unknown) => {
+			const folder = getFolderFromCommandTarget(targetFolder) ?? (await getTargetWorkspaceFolder());
 			if (!folder) {
 				return;
 			}
@@ -80,8 +87,8 @@ function registerExportCommand(
 ): vscode.Disposable {
 	return vscode.commands.registerCommand(
 		COMMANDS.exportSelection,
-		async (targetFolder?: vscode.WorkspaceFolder) => {
-			const folder = targetFolder ?? (await getTargetWorkspaceFolder());
+		async () => {
+			const folder = await getTargetWorkspaceFolder();
 			if (!folder) {
 				return;
 			}
@@ -94,11 +101,12 @@ function registerExportCommand(
 				return;
 			}
 
-			const exportFiles = await collectExportFiles(folder);
+			const exportFiles = await collectExportFiles(folder, config);
 			const exportContent = buildExportDocument(exportFiles, config.prompt);
 
-			await bridgeDocumentProvider.replaceContent(exportContent);
-			await openBridgeDocument();
+			if (await bridgeDocumentProvider.replaceContent(exportContent)) {
+				await openBridgeDocument();
+			}
 		}
 	);
 }
@@ -109,7 +117,7 @@ function registerImportCommand(
 ): vscode.Disposable {
 	return vscode.commands.registerCommand(
 		COMMANDS.importSelection,
-		async (targetFolder?: vscode.WorkspaceFolder) => {
+		async () => {
 			const patchText = await bridgeDocumentProvider.getContent();
 			if (patchText.trim().length === 0) {
 				void vscode.window.showErrorMessage(
@@ -118,7 +126,7 @@ function registerImportCommand(
 				return;
 			}
 
-			const folder = targetFolder ?? (await getTargetWorkspaceFolder());
+			const folder = await getTargetWorkspaceFolder();
 			if (!folder) {
 				return;
 			}
@@ -169,7 +177,7 @@ function registerCreateSelectionCommand(
 ): vscode.Disposable {
 	return vscode.commands.registerCommand(
 		COMMANDS.createSelection,
-		async (target?: vscode.WorkspaceFolder | ContextBridgeNode) => {
+		async (target?: unknown) => {
 			const folder = getFolderFromCommandTarget(target) ?? (await getTargetWorkspaceFolder());
 			if (!folder) {
 				return;
@@ -191,9 +199,6 @@ function registerCreateSelectionCommand(
 
 			if (result.status === 'created') {
 				explorerProvider.refresh();
-				void vscode.window.showInformationMessage(
-					`Context Bridge: selection "${result.selectionName}" created.`
-				);
 				return;
 			}
 
@@ -231,9 +236,41 @@ function registerRenameSelectionCommand(
 
 		if (result.status === 'renamed') {
 			explorerProvider.refresh();
-			void vscode.window.showInformationMessage(
-				`Context Bridge: selection renamed to "${result.selectionName}".`
-			);
+			return;
+		}
+
+		handleSelectionManagementFailure(result);
+	});
+}
+
+function registerRenameSelectionShortCommand(
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable {
+	return vscode.commands.registerCommand(COMMANDS.renameSelectionShort, async (node?: ContextBridgeNode) => {
+		if (!node || node.kind !== 'selection') {
+			return;
+		}
+
+		const short = await vscode.window.showInputBox({
+			title: 'Rename Context Bridge Selection Short Name',
+			prompt: 'Enter a new short label (1–2 characters).',
+			value: node.selection.short,
+			validateInput: (value) =>
+				value.trim().length === 0 || value.trim().length > 2
+					? 'Short name must be 1–2 characters.'
+					: /^(E|I)$/i.test(value.trim())
+						? 'E and I are reserved decoration labels.'
+						: undefined,
+		});
+
+		if (short === undefined) {
+			return;
+		}
+
+		const result = await selectionEngine.renameSelectionShort(node.folder, node.selectionIndex, short);
+		if (result.status === 'renamed') {
+			explorerProvider.refresh();
 			return;
 		}
 
@@ -265,9 +302,6 @@ function registerDeleteSelectionCommand(
 
 		if (result.status === 'deleted') {
 			explorerProvider.refresh();
-			void vscode.window.showInformationMessage(
-				`Context Bridge: selection "${result.selectionName}" deleted.`
-			);
 			return;
 		}
 
@@ -299,9 +333,6 @@ function registerSetSelectionActiveStateCommand(
 		}
 
 		explorerProvider.refresh();
-		void vscode.window.showInformationMessage(
-			`Context Bridge: selection "${node.selection.name}" ${active ? 'activated' : 'deactivated'}.`
-		);
 	});
 }
 
@@ -309,50 +340,63 @@ function registerAddToSelectionCommand(
 	explorerProvider: ContextBridgeExplorerProvider,
 	selectionEngine: ContextBridgeSelectionEngine
 ): vscode.Disposable {
-	return vscode.commands.registerCommand(COMMANDS.addToSelection, async (resourceUri?: vscode.Uri) => {
-		if (!resourceUri) {
-			return;
-		}
+	return vscode.commands.registerCommand(
+		COMMANDS.addToSelection,
+		async (resourceUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+			if (!resourceUri) {
+				return;
+			}
 
-		const folder = vscode.workspace.getWorkspaceFolder(resourceUri);
-		if (!folder) {
-			return;
-		}
+			const folder = vscode.workspace.getWorkspaceFolder(resourceUri);
+			if (!folder) {
+				return;
+			}
 
-		const summaries = await selectionEngine.getSelectionSummaries(folder);
-		if (summaries.length === 0) {
-			void vscode.window.showErrorMessage(
-				'Context Bridge: create a selection before adding resources.'
+			const resources = getSelectedExplorerResources(resourceUri, selectedUris);
+			const summaries = await selectionEngine.getSelectionSummaries(folder);
+			if (summaries.length === 0) {
+				void vscode.window.showErrorMessage(
+					'Context Bridge: create a selection before adding resources.'
+				);
+				return;
+			}
+
+			const picked = await vscode.window.showQuickPick(
+				summaries.map((summary) => ({
+					label: summary.selection.name,
+					description: `${summary.selection.short} • ${summary.selection.active ? 'active' : 'inactive'} • ${formatFileCount(summary.fileCount)}`,
+					index: summary.selectionIndex,
+				})),
+				{ placeHolder: resources.length === 1
+					? 'Which selection should this resource be added to?'
+					: `Add ${resources.length} selected resources to which selection?` }
 			);
-			return;
-		}
 
-		const picked = await vscode.window.showQuickPick(
-			summaries.map((summary, index) => ({
-				label: summary.selection.name,
-				description: `${summary.selection.short} • ${summary.selection.active ? 'active' : 'inactive'} • ${formatFileCount(summary.fileCount)}`,
-				index,
-			})),
-			{ placeHolder: 'Which selection should this resource be added to?' }
-		);
+			if (!picked) {
+				return;
+			}
 
-		if (!picked) {
-			return;
-		}
+			if (resources.length === 1) {
+				const result = await selectionEngine.addResourceToSelection(resourceUri, picked.index);
+				if (result.status === 'added') {
+					explorerProvider.refresh();
+					return;
+				}
 
-		const fallbackSelectionName = summaries[picked.index]?.selection.name;
-		const result = await selectionEngine.addResourceToSelection(resourceUri, picked.index);
+				handleSelectionMutationFailure(result, picked.index, picked.label);
+				return;
+			}
 
-		if (result.status === 'added') {
+			const result = await selectionEngine.mutateResourcesInSelection(folder, resources, picked.index, 'add');
+			if (result.status !== 'completed') {
+				handleSelectionMutationFailure(result, picked.index, picked.label);
+				return;
+			}
+
 			explorerProvider.refresh();
-			void vscode.window.showInformationMessage(
-				`Context Bridge: added to "${result.selectionName ?? fallbackSelectionName ?? 'selection'}".`
-			);
-			return;
+			showBatchMutationSummary(result, 'add');
 		}
-
-		handleSelectionMutationFailure(result, picked.index, fallbackSelectionName);
-	});
+	);
 }
 
 function registerRemoveFromSelectionCommand(
@@ -361,49 +405,153 @@ function registerRemoveFromSelectionCommand(
 ): vscode.Disposable {
 	return vscode.commands.registerCommand(
 		COMMANDS.removeFromSelection,
-		async (resourceUri?: vscode.Uri) => {
+		async (resourceUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
 			if (!resourceUri) {
 				return;
 			}
 
-			const memberships = await selectionEngine.getMemberships(resourceUri);
-			if (memberships.length === 0) {
+			const folder = vscode.workspace.getWorkspaceFolder(resourceUri);
+			if (!folder) {
+				return;
+			}
+
+			const resources = getSelectedExplorerResources(resourceUri, selectedUris);
+			const membershipsBySelection = new Map<number, { membership: ResourceMembershipInfo; count: number }>();
+			for (const uri of resources) {
+				if (vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() !== folder.uri.toString()) {
+					continue;
+				}
+				for (const membership of await selectionEngine.getMemberships(uri)) {
+					const entry = membershipsBySelection.get(membership.selectionIndex);
+					if (entry) {
+						entry.count += 1;
+					} else {
+						membershipsBySelection.set(membership.selectionIndex, { membership, count: 1 });
+					}
+				}
+			}
+
+			if (membershipsBySelection.size === 0) {
 				void vscode.window.showInformationMessage(
-					'Context Bridge: this resource is not part of any selection.'
+					'Context Bridge: none of the selected resources are part of a selection.'
 				);
 				return;
 			}
 
 			const picked = await vscode.window.showQuickPick(
-				memberships.map((membership) => ({
-					label: membership.selection.name,
-					description: `${membership.selection.short} • ${formatMembershipKind(membership.kind)}`,
-					index: membership.selectionIndex,
-				})),
-				{ placeHolder: 'Remove this resource from which selection?' }
+				[...membershipsBySelection.values()]
+					.sort((left, right) => left.membership.selectionIndex - right.membership.selectionIndex)
+					.map(({ membership, count }) => ({
+						label: membership.selection.name,
+						description: resources.length === 1
+							? `${membership.selection.short} • ${formatMembershipKind(membership.kind)}`
+							: `${membership.selection.short} • ${count} of ${resources.length} selected`,
+						index: membership.selectionIndex,
+					})),
+				{ placeHolder: resources.length === 1
+					? 'Remove this resource from which selection?'
+					: 'Remove selected resources from which selection?' }
 			);
 
 			if (!picked) {
 				return;
 			}
 
-			const fallbackSelectionName = memberships.find(
-				(membership) => membership.selectionIndex === picked.index
-			)?.selection.name;
+			if (resources.length === 1) {
+				const result = await selectionEngine.removeResourceFromSelection(resourceUri, picked.index);
+				if (result.status === 'removed' || result.status === 'excluded') {
+					explorerProvider.refresh();
+					return;
+				}
 
-			const result = await selectionEngine.removeResourceFromSelection(resourceUri, picked.index);
-
-			if (result.status === 'removed' || result.status === 'excluded') {
-				explorerProvider.refresh();
-				void vscode.window.showInformationMessage(
-					`Context Bridge: ${result.status === 'excluded' ? 'excluded from' : 'removed from'} "${result.selectionName ?? fallbackSelectionName ?? 'selection'}".`
-				);
+				handleSelectionMutationFailure(result, picked.index, picked.label);
 				return;
 			}
 
-			handleSelectionMutationFailure(result, picked.index, fallbackSelectionName);
+			const result = await selectionEngine.mutateResourcesInSelection(folder, resources, picked.index, 'remove');
+			if (result.status !== 'completed') {
+				handleSelectionMutationFailure(result, picked.index, picked.label);
+				return;
+			}
+
+			explorerProvider.refresh();
+			showBatchMutationSummary(result, 'remove');
 		}
 	);
+}
+
+function registerIgnoredContentExtensionCommand(
+	command: typeof COMMANDS.addIgnoredContentExtension | typeof COMMANDS.removeIgnoredContentExtension,
+	ignored: boolean,
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable {
+	return vscode.commands.registerCommand(command, async (resourceUri?: vscode.Uri) => {
+		if (!resourceUri) {
+			return;
+		}
+
+		const result = await selectionEngine.setFileContentExtensionIgnored(resourceUri, ignored);
+		if (result === 'configMissing') {
+			void vscode.window.showErrorMessage(
+				'Context Bridge: initialize .vscode/context-bridge.json first.'
+			);
+			return;
+		}
+
+		if (result === 'invalidResource') {
+			void vscode.window.showErrorMessage('Context Bridge: select a file in Explorer.');
+			return;
+		}
+
+		if (result === 'added' || result === 'removed') {
+			explorerProvider.refresh();
+		}
+	});
+}
+
+function getSelectedExplorerResources(resourceUri: vscode.Uri, selectedUris?: vscode.Uri[]): vscode.Uri[] {
+	const selected = selectedUris?.length ? selectedUris : [resourceUri];
+	return [...new Map(selected.map((uri) => [uri.toString(), uri])).values()];
+}
+
+function showBatchMutationSummary(
+	result: Extract<SelectionBatchMutationResult, { status: 'completed' }>,
+	mode: 'add' | 'remove'
+): void {
+	const changed = mode === 'add'
+		? `${result.added} added`
+		: `${result.removed} removed, ${result.excluded} excluded`;
+	const skipped = result.skipped > 0 ? `, ${result.skipped} skipped` : '';
+	void vscode.window.showInformationMessage(
+		`Context Bridge: ${changed} in "${result.selectionName}"${skipped}.`
+	);
+}
+
+function registerRemoveSelectionItemCommand(
+	command: typeof COMMANDS.removeSelectionItem | typeof COMMANDS.removeExclusionItem,
+	isExclusion: boolean,
+	explorerProvider: ContextBridgeExplorerProvider,
+	selectionEngine: ContextBridgeSelectionEngine
+): vscode.Disposable {
+	return vscode.commands.registerCommand(command, async (node?: ContextBridgeNode) => {
+		if (!node || node.kind !== 'selectionItem' || (node.source === 'excludeItem') !== isExclusion) {
+			return;
+		}
+
+		const result = await selectionEngine.removeSelectionItem(
+			node.folder,
+			node.selectionIndex,
+			node.item,
+			isExclusion
+		);
+		if (result.status === 'removed' || result.status === 'excluded') {
+			explorerProvider.refresh();
+			return;
+		}
+
+		handleSelectionMutationFailure(result, node.selectionIndex);
+	});
 }
 
 function handleSelectionManagementFailure(result: SelectionManagementResult): void {
@@ -420,6 +568,10 @@ function handleSelectionManagementFailure(result: SelectionManagementResult): vo
 
 		case 'invalidName':
 			void vscode.window.showErrorMessage('Context Bridge: selection name is required.');
+			return;
+
+		case 'invalidShort':
+			void vscode.window.showErrorMessage('Context Bridge: short name must be 1–2 characters and cannot be E or I.');
 			return;
 
 		case 'configMissing':
@@ -489,17 +641,6 @@ function handleSelectionMutationFailure(
 	}
 }
 
-function formatMembershipKind(kind: ResourceMembershipInfo['kind']): string {
-	switch (kind) {
-		case 'direct':
-			return 'directly';
-		case 'insideSelectedFolder':
-			return 'through selected folder';
-		case 'containsSelectedDescendant':
-			return 'contains selected items';
-	}
-}
-
 function formatFileCount(fileCount: number): string {
 	return `${fileCount} file(s)`;
 }
@@ -528,18 +669,27 @@ function formatImportSummary(summary: ContextBridgeImportSummary): string {
 
 
 
-function getFolderFromCommandTarget(
-	target: vscode.WorkspaceFolder | ContextBridgeNode | undefined
-): vscode.WorkspaceFolder | undefined {
-	if (!target) {
+function getFolderFromCommandTarget(target: unknown): vscode.WorkspaceFolder | undefined {
+	if (!target || typeof target !== 'object') {
 		return undefined;
 	}
 
-	if ('kind' in target) {
-		return target.folder;
+	const candidate = 'kind' in target && 'folder' in target ? target.folder : target;
+	if (!candidate || typeof candidate !== 'object') {
+		return undefined;
 	}
 
-	return target;
+	const uri = candidate instanceof vscode.Uri
+		? candidate
+		: 'uri' in candidate && candidate.uri instanceof vscode.Uri
+			? candidate.uri
+			: undefined;
+	if (!uri) {
+		return undefined;
+	}
+
+	return vscode.workspace.workspaceFolders?.find((folder) => folder.uri.toString() === uri.toString())
+		?? vscode.workspace.getWorkspaceFolder(uri);
 }
 
 async function getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
@@ -594,10 +744,6 @@ async function initializeWorkspaceFiles(folder: vscode.WorkspaceFolder): Promise
 		toWorkspaceRelativeUri(folder.uri, CONFIG_FILE_PATH)
 	);
 	await vscode.window.showTextDocument(document);
-
-	void vscode.window.showInformationMessage(
-		`Context Bridge: "${CONFIG_FILE_PATH}" was initialized in "${folder.name}".`
-	);
 }
 
 async function getExistingManagedFiles(folder: vscode.WorkspaceFolder): Promise<ManagedFilePath[]> {

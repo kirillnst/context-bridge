@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import type { ActionCommand } from '../constants';
 import type { ContextBridgeItem, ContextBridgeSelection } from '../core/types';
 
 export type SelectionItemSource = 'item' | 'excludeItem';
@@ -7,8 +6,7 @@ export type SelectionItemSource = 'item' | 'excludeItem';
 export type ContextBridgeNode =
 	| WorkspaceFolderNode
 	| SelectionNode
-	| SelectionItemNode
-	| ActionNode;
+	| SelectionItemNode;
 
 export interface WorkspaceFolderNode {
 	kind: 'workspaceFolder';
@@ -28,13 +26,8 @@ export interface SelectionNode {
 export interface SelectionItemNode {
 	kind: 'selectionItem';
 	folder: vscode.WorkspaceFolder;
+	selectionIndex: number;
 	item: ContextBridgeItem;
 	source: SelectionItemSource;
-}
-
-export interface ActionNode {
-	kind: 'action';
-	folder: vscode.WorkspaceFolder;
-	command: ActionCommand;
 }
 

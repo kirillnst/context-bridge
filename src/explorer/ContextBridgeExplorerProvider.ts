@@ -1,15 +1,16 @@
 import * as vscode from 'vscode';
-import { COMMANDS, type ActionCommand } from '../constants';
 import {
 	CONFIG_FILE_PATH,
+	readContextBridgeConfig,
 	ContextBridgeSelectionEngine,
 	getBaseName,
 	toWorkspaceRelativeUri,
 } from '../selectionEngine';
-import type { ActionNode, ContextBridgeNode, SelectionNode, SelectionItemNode, WorkspaceFolderNode } from './types';
+import type { ContextBridgeNode, SelectionNode, SelectionItemNode, WorkspaceFolderNode } from './types';
 
 export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<ContextBridgeNode> {
 	private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<ContextBridgeNode | undefined | void>();
+	private configurationRefreshVersion = 0;
 	public readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
 
 	constructor(
@@ -30,10 +31,33 @@ export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<Co
 			vscode.workspace.onDidRenameFiles(() => this.refresh()),
 			vscode.workspace.onDidChangeWorkspaceFolders(() => this.refresh())
 		);
+
+		void this.updateConfigurationContext();
 	}
 
 	public refresh(): void {
 		this.onDidChangeTreeDataEmitter.fire();
+		void this.updateConfigurationContext();
+	}
+
+	private async updateConfigurationContext(): Promise<void> {
+		const version = ++this.configurationRefreshVersion;
+		const folders = vscode.workspace.workspaceFolders ?? [];
+		const configs = await Promise.all(folders.map((folder) => readContextBridgeConfig(folder)));
+		if (version !== this.configurationRefreshVersion) {
+			return;
+		}
+
+		await vscode.commands.executeCommand(
+			'setContext',
+			'contextBridge.hasConfiguration',
+			configs.some((config) => config !== undefined)
+		);
+		await vscode.commands.executeCommand(
+			'setContext',
+			'contextBridge.needsInitialization',
+			configs.some((config) => config === undefined)
+		);
 	}
 
 	public async getChildren(element?: ContextBridgeNode): Promise<ContextBridgeNode[]> {
@@ -61,12 +85,14 @@ export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<Co
 				const itemNodes = element.selection.items.map<SelectionItemNode>((item) => ({
 					kind: 'selectionItem',
 					folder: element.folder,
+					selectionIndex: element.selectionIndex,
 					item,
 					source: 'item',
 				}));
 				const excludeNodes = element.selection.excludeItems.map<SelectionItemNode>((item) => ({
 					kind: 'selectionItem',
 					folder: element.folder,
+					selectionIndex: element.selectionIndex,
 					item,
 					source: 'excludeItem',
 				}));
@@ -75,7 +101,6 @@ export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<Co
 			}
 
 			case 'selectionItem':
-			case 'action':
 				return [];
 		}
 	}
@@ -97,17 +122,15 @@ export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<Co
 			case 'selection': {
 				const isActive = element.selection.active;
 				const item = new vscode.TreeItem(
-					element.selection.name,
+					`${element.selection.short} ${element.selection.name}`,
 					vscode.TreeItemCollapsibleState.Collapsed
 				);
 
 				item.id = `contextBridge.selection:${element.folder.uri.toString()}:${element.selection.name}`;
-				item.iconPath = isActive
-					? new vscode.ThemeIcon('list-tree')
-					: new vscode.ThemeIcon('list-tree', new vscode.ThemeColor('disabledForeground'));
-				item.description = isActive
-					? `${element.selection.short} • ${formatFileCount(element.fileCount)}`
-					: `${element.selection.short} • ${formatFileCount(element.fileCount)} • inactive`;
+				item.checkboxState = isActive
+					? vscode.TreeItemCheckboxState.Checked
+					: vscode.TreeItemCheckboxState.Unchecked;
+				item.description = formatFileCount(element.fileCount);
 				item.tooltip =
 					`${element.selection.name} [${element.selection.short}]\n` +
 					`Files: ${element.fileCount}\n` +
@@ -131,7 +154,12 @@ export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<Co
 				);
 
 				item.resourceUri = targetUri;
-				item.description = isExclude ? `exclude • ${element.item.path}` : element.item.path;
+				const pathDescription = element.item.path === getBaseName(element.item.path)
+					? ''
+					: element.item.path;
+				item.description = isExclude
+					? `excluded${pathDescription ? ` • ${pathDescription}` : ''}`
+					: pathDescription;
 				item.tooltip = `${isExclude ? 'Excluded item' : isFolder ? 'Folder' : 'File'}\n${element.item.path}`;
 				item.iconPath = isExclude
 					? new vscode.ThemeIcon('circle-slash')
@@ -153,24 +181,6 @@ export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<Co
 
 				return item;
 			}
-
-			case 'action': {
-				const item = new vscode.TreeItem(
-					getActionLabel(element.command),
-					vscode.TreeItemCollapsibleState.None
-				);
-
-				item.iconPath = new vscode.ThemeIcon(getActionIcon(element.command));
-				item.tooltip = getActionLabel(element.command);
-				item.contextValue = 'contextBridge.action';
-				item.command = {
-					command: element.command,
-					title: getActionLabel(element.command),
-					arguments: [element.folder],
-				};
-
-				return item;
-			}
 		}
 	}
 
@@ -184,64 +194,11 @@ export class ContextBridgeExplorerProvider implements vscode.TreeDataProvider<Co
 			fileCount: summary.fileCount,
 		}));
 
-		return [...selectionNodes, ...this.getActionNodes(folder)];
+		return selectionNodes;
 	}
-
-	private getActionNodes(folder: vscode.WorkspaceFolder): ActionNode[] {
-		return [
-			{
-				kind: 'action',
-				folder,
-				command: COMMANDS.initializeWorkspaceFiles,
-			},
-			{
-				kind: 'action',
-				folder,
-				command: COMMANDS.createSelection,
-			},
-			{
-				kind: 'action',
-				folder,
-				command: COMMANDS.exportSelection,
-			},
-			{
-				kind: 'action',
-				folder,
-				command: COMMANDS.importSelection,
-			},
-		];
-	}
-}
-
-function getActionLabel(command: ActionCommand): string {
-	switch (command) {
-		case COMMANDS.initializeWorkspaceFiles:
-			return 'Initialize';
-		case COMMANDS.createSelection:
-			return 'Create Selection';
-		case COMMANDS.exportSelection:
-			return 'Export';
-		case COMMANDS.importSelection:
-			return 'Import';
-	}
-}
-
-function getActionIcon(command: ActionCommand): string {
-	switch (command) {
-		case COMMANDS.initializeWorkspaceFiles:
-			return 'add';
-		case COMMANDS.createSelection:
-			return 'list-selection';
-		case COMMANDS.exportSelection:
-			return 'arrow-up';
-		case COMMANDS.importSelection:
-			return 'arrow-down';
-	}
-
-
 }
 
 function formatFileCount(fileCount: number): string {
-	return `${fileCount} file(s)`;
+	return `${fileCount} ${fileCount === 1 ? 'file' : 'files'}`;
 }
 
